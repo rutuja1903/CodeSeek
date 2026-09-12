@@ -3,3 +3,4 @@ uvicorn
 networkx
 pytest
 httpx
+python-multipart

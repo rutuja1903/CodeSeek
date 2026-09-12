@@ -7,7 +7,11 @@ search, and dependency graph modules.
 
 import os
 import json
-from fastapi import FastAPI, HTTPException, Path, Query
+import uuid
+import zipfile
+import shutil
+import tempfile
+from fastapi import FastAPI, HTTPException, Path, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -62,6 +66,108 @@ def analyze_project(req: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
         
+    return {"message": "Project indexed successfully", "project_id": project_id}
+
+
+# Base directory where ZIP uploads are extracted.
+# Each upload gets its own UUID sub-directory to avoid collisions.
+# NOTE (MVP): Extracted directories are not automatically deleted after indexing.
+# They are retained so that the File Explorer can still read source content via /files/{id}.
+# Manual cleanup of backend/uploads/ is needed periodically.
+_UPLOADS_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads")
+
+@app.post("/projects/analyze-upload")
+def analyze_project_upload(
+    name: str = Form(...),
+    file: UploadFile = File(...)
+):
+    """
+    Upload a .zip containing a Python repository, extract it safely,
+    and index it using the existing pipeline.
+
+    Safety:
+    - Rejects uploads whose filename doesn't end with .zip
+    - Rejects files that are not readable as a valid ZIP archive
+    - Rejects ZIP entries with path traversal components (Zip Slip)
+    - Extracts into an application-controlled per-upload UUID directory
+    """
+    # --- 1. Validate file extension ---
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Only .zip files are accepted")
+
+    # --- 2. Read uploaded bytes and validate as a real ZIP ---
+    try:
+        zip_bytes = file.file.read()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read uploaded file")
+
+    # Write bytes to a temporary file so zipfile can seek through it
+    try:
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+        os.close(tmp_fd)
+        with open(tmp_path, "wb") as f:
+            f.write(zip_bytes)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to save uploaded ZIP")
+
+    try:
+        if not zipfile.is_zipfile(tmp_path):
+            raise HTTPException(status_code=400, detail="Uploaded file is not a valid ZIP archive")
+
+        with zipfile.ZipFile(tmp_path, "r") as zf:
+            # --- 3. Zip Slip / path traversal check ---
+            extract_root = os.path.realpath(
+                os.path.join(_UPLOADS_ROOT, str(uuid.uuid4()))
+            )
+            os.makedirs(extract_root, exist_ok=True)
+
+            for member in zf.infolist():
+                # Normalise the member path and check it stays inside extract_root
+                member_path = os.path.realpath(
+                    os.path.join(extract_root, member.filename)
+                )
+                if not member_path.startswith(extract_root + os.sep) and member_path != extract_root:
+                    # Clean up the already-created directory before raising
+                    shutil.rmtree(extract_root, ignore_errors=True)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Rejected: ZIP entry '{member.filename}' would escape extraction directory (Zip Slip)"
+                    )
+
+            # --- 4. Extract ---
+            zf.extractall(extract_root)
+
+        # --- 5. Detect single top-level folder ---
+        # If the ZIP contains exactly one top-level directory entry, analyse that
+        # sub-directory directly (the common convention for GitHub-exported ZIPs).
+        top_level = [
+            entry for entry in os.listdir(extract_root)
+            if os.path.isdir(os.path.join(extract_root, entry))
+        ]
+        top_level_files = [
+            entry for entry in os.listdir(extract_root)
+            if os.path.isfile(os.path.join(extract_root, entry))
+        ]
+        if len(top_level) == 1 and not top_level_files:
+            analyze_dir = os.path.join(extract_root, top_level[0])
+        else:
+            # Files are directly at ZIP root — analyse the extraction root itself
+            analyze_dir = extract_root
+
+        # --- 6. Run existing indexing pipeline ---
+        try:
+            project_id = index_project(name, analyze_dir)
+        except Exception as e:
+            shutil.rmtree(extract_root, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
+
+    finally:
+        # Always remove the temporary raw zip file
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
     return {"message": "Project indexed successfully", "project_id": project_id}
 
 @app.get("/projects/{project_id}")

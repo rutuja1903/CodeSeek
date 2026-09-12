@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import Dashboard from './components/Dashboard';
 import Search from './components/Search';
 import FileExplorer from './components/FileExplorer';
@@ -12,52 +12,69 @@ import './index.css';
 function App() {
   const [activeTab, setActiveTab] = useState(null); // null means home
   const [name, setName] = useState('');
-  const [directoryPath, setDirectoryPath] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null); // File object from <input type="file">
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [success, setSuccess] = useState(false);
   const [overview, setOverview] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const handleFileChange = (e) => {
+    const f = e.target.files?.[0] || null;
+    if (f && !f.name.toLowerCase().endsWith('.zip')) {
+      setError('Please select a .zip file.');
+      setSelectedFile(null);
+      e.target.value = '';
+      return;
+    }
+    setError(null);
+    setSelectedFile(f);
+  };
 
   const handleAnalyze = async (e) => {
     e.preventDefault();
-    if (!name || !directoryPath) {
-      setError("Please fill in both fields.");
+
+    if (!name.trim()) {
+      setError('Please enter a project name.');
+      return;
+    }
+    if (!selectedFile) {
+      setError('Please choose a .zip file to upload.');
       return;
     }
 
     setLoading(true);
     setError(null);
-    setSuccess(false);
     setOverview(null);
     setActiveTab(null);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/projects/analyze', {
+      // Build multipart/form-data — do NOT set Content-Type header manually;
+      // the browser sets it automatically with the correct boundary.
+      const formData = new FormData();
+      formData.append('name', name.trim());
+      formData.append('file', selectedFile, selectedFile.name);
+
+      const response = await fetch('http://127.0.0.1:8000/projects/analyze-upload', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ name, directory_path: directoryPath })
+        body: formData,
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.detail || "Analysis failed");
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Upload failed (HTTP ${response.status})`);
       }
 
       const data = await response.json();
-      setSuccess(true);
-      
-      // Fetch overview data
+
+      // Fetch project overview
       const overviewRes = await fetch(`http://127.0.0.1:8000/projects/${data.project_id}`);
-      if (overviewRes.ok) {
-        const overviewData = await overviewRes.json();
-        setOverview(overviewData);
-        setActiveTab('dashboard'); // Auto navigate to dashboard on success
-      }
-      
+      if (!overviewRes.ok) throw new Error('Indexing succeeded but could not fetch project overview.');
+      const overviewData = await overviewRes.json();
+      setOverview(overviewData);
+      setActiveTab('dashboard');
+
     } catch (err) {
-      setError(err.message || "Could not connect to the backend.");
+      setError(err.message || 'Could not connect to the backend.');
     } finally {
       setLoading(false);
     }
@@ -78,7 +95,7 @@ function App() {
     );
   }
 
-  // Otherwise render the home screen
+  // Home / upload screen
   return (
     <div className="home-container">
       <header className="header">
@@ -90,6 +107,7 @@ function App() {
         <div className="card form-card">
           <h2>Analyze Project</h2>
           <form onSubmit={handleAnalyze}>
+            {/* Project name */}
             <div className="form-group">
               <label htmlFor="name">Project Name</label>
               <input
@@ -101,21 +119,55 @@ function App() {
                 disabled={loading}
               />
             </div>
-            
+
+            {/* ZIP file chooser */}
             <div className="form-group">
-              <label htmlFor="directoryPath">Local Directory Path</label>
-              <input
-                type="text"
-                id="directoryPath"
-                value={directoryPath}
-                onChange={(e) => setDirectoryPath(e.target.value)}
-                placeholder="e.g., C:/Projects/my_app"
-                disabled={loading}
-              />
+              <label htmlFor="zipFile">Repository ZIP</label>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                }}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  id="zipFile"
+                  accept=".zip"
+                  onChange={handleFileChange}
+                  disabled={loading}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={loading}
+                  style={{
+                    padding: '10px 16px',
+                    borderRadius: '6px',
+                    border: '1px dashed var(--border-color)',
+                    backgroundColor: 'var(--bg-color)',
+                    color: 'var(--text-muted)',
+                    cursor: loading ? 'not-allowed' : 'pointer',
+                    fontSize: '0.9rem',
+                    textAlign: 'left',
+                  }}
+                >
+                  {selectedFile
+                    ? `\u2713 ${selectedFile.name} (${(selectedFile.size / 1024).toFixed(1)} KB)`
+                    : 'Choose .zip file\u2026'}
+                </button>
+                {selectedFile && (
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    Selected: {selectedFile.name}
+                  </span>
+                )}
+              </div>
             </div>
 
-            <button type="submit" disabled={loading} className="btn-primary">
-              {loading ? "Analyzing..." : "Analyze Project"}
+            <button type="submit" disabled={loading || !selectedFile} className="btn-primary">
+              {loading ? 'Uploading & Analyzing\u2026' : 'Analyze Project'}
             </button>
           </form>
         </div>
