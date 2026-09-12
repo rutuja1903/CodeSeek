@@ -4,6 +4,7 @@ import Search from './components/Search';
 import FileExplorer from './components/FileExplorer';
 import FunctionExplorer from './components/FunctionExplorer';
 import ClassExplorer from './components/ClassExplorer';
+import DependencyGraphs from './components/DependencyGraphs';
 import AppShell from './components/AppShell';
 import './index.css';
 
@@ -70,6 +71,7 @@ function App() {
         {activeTab === 'files' && <FileExplorer overview={overview} />}
         {activeTab === 'functions' && <FunctionExplorer overview={overview} />}
         {activeTab === 'classes' && <ClassExplorer overview={overview} />}
+        {activeTab === 'graphs' && <DependencyGraphs overview={overview} />}
       </AppShell>
     );
   }
