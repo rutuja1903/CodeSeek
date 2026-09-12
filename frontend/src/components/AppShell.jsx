@@ -30,6 +30,12 @@ function AppShell({ overview, activeTab, onNavigate, children }) {
           >
             File Explorer
           </button>
+          <button 
+            className={`nav-item ${activeTab === 'functions' ? 'active' : ''}`}
+            onClick={() => onNavigate('functions')}
+          >
+            Functions
+          </button>
         </nav>
       </aside>
 

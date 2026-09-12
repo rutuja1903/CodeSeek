@@ -2,6 +2,7 @@ import { useState } from 'react';
 import Dashboard from './components/Dashboard';
 import Search from './components/Search';
 import FileExplorer from './components/FileExplorer';
+import FunctionExplorer from './components/FunctionExplorer';
 import AppShell from './components/AppShell';
 import './index.css';
 
@@ -66,6 +67,7 @@ function App() {
         {activeTab === 'dashboard' && <Dashboard overview={overview} />}
         {activeTab === 'search' && <Search overview={overview} />}
         {activeTab === 'files' && <FileExplorer overview={overview} />}
+        {activeTab === 'functions' && <FunctionExplorer overview={overview} />}
       </AppShell>
     );
   }
