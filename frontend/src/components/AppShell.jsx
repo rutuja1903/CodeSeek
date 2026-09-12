@@ -48,6 +48,12 @@ function AppShell({ overview, activeTab, onNavigate, children }) {
           >
             Graphs
           </button>
+          <button 
+            className={`nav-item ${activeTab === 'statistics' ? 'active' : ''}`}
+            onClick={() => onNavigate('statistics')}
+          >
+            Statistics
+          </button>
         </nav>
       </aside>
 
