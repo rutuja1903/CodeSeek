@@ -83,7 +83,7 @@ function App() {
   // If we have a project loaded and an active tab, render the AppShell
   if (activeTab && overview) {
     return (
-      <AppShell overview={overview} activeTab={activeTab} onNavigate={setActiveTab}>
+      <AppShell overview={overview} activeTab={activeTab} onNavigate={setActiveTab} onUpdateOverview={setOverview}>
         {activeTab === 'dashboard' && <Dashboard overview={overview} />}
         {activeTab === 'search' && <Search overview={overview} />}
         {activeTab === 'files' && <FileExplorer overview={overview} />}

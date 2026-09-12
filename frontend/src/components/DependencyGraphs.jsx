@@ -224,7 +224,12 @@ function GraphCanvas({ backendData, graphType, labelKey, idKey }) {
   return (
     // width+height 100% gives React Flow concrete pixel dimensions from the parent.
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      <ReactFlow
+      {!backendData || backendData.nodes?.length === 0 ? (
+        <div style={{ display: 'flex', width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', backgroundColor: '#0f172a', color: 'var(--text-muted)' }}>
+          <p>No graph data available. The graph is empty.</p>
+        </div>
+      ) : (
+        <ReactFlow
         nodes={styledNodes}
         edges={edges}
         onNodesChange={onNodesChange}
@@ -243,6 +248,7 @@ function GraphCanvas({ backendData, graphType, labelKey, idKey }) {
           maskColor="rgba(0,0,0,0.4)"
         />
       </ReactFlow>
+      )}
       {selectedNode && (
         <NodeDetails node={selectedNode} inDeg={inDeg} outDeg={outDeg} graphType={graphType} />
       )}

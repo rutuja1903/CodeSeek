@@ -14,7 +14,7 @@ import tempfile
 from fastapi import FastAPI, HTTPException, Path, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 from app.database.core import get_connection
 from app.services.indexer import index_project
@@ -76,20 +76,10 @@ def analyze_project(req: AnalyzeRequest):
 # Manual cleanup of backend/uploads/ is needed periodically.
 _UPLOADS_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads")
 
-@app.post("/projects/analyze-upload")
-def analyze_project_upload(
-    name: str = Form(...),
-    file: UploadFile = File(...)
-):
+def _extract_and_index_zip(project_name: str, file: UploadFile, update_project_id: Optional[int] = None) -> int:
     """
-    Upload a .zip containing a Python repository, extract it safely,
-    and index it using the existing pipeline.
-
-    Safety:
-    - Rejects uploads whose filename doesn't end with .zip
-    - Rejects files that are not readable as a valid ZIP archive
-    - Rejects ZIP entries with path traversal components (Zip Slip)
-    - Extracts into an application-controlled per-upload UUID directory
+    Validates, extracts, and indexes an uploaded ZIP file.
+    Returns the newly created project_id.
     """
     # --- 1. Validate file extension ---
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -138,8 +128,6 @@ def analyze_project_upload(
             zf.extractall(extract_root)
 
         # --- 5. Detect single top-level folder ---
-        # If the ZIP contains exactly one top-level directory entry, analyse that
-        # sub-directory directly (the common convention for GitHub-exported ZIPs).
         top_level = [
             entry for entry in os.listdir(extract_root)
             if os.path.isdir(os.path.join(extract_root, entry))
@@ -151,12 +139,11 @@ def analyze_project_upload(
         if len(top_level) == 1 and not top_level_files:
             analyze_dir = os.path.join(extract_root, top_level[0])
         else:
-            # Files are directly at ZIP root — analyse the extraction root itself
             analyze_dir = extract_root
 
         # --- 6. Run existing indexing pipeline ---
         try:
-            project_id = index_project(name, analyze_dir)
+            return index_project(project_name, analyze_dir, update_project_id=update_project_id)
         except Exception as e:
             shutil.rmtree(extract_root, ignore_errors=True)
             raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
@@ -168,7 +155,40 @@ def analyze_project_upload(
         except OSError:
             pass
 
+
+@app.post("/projects/analyze-upload")
+def analyze_project_upload(
+    name: str = Form(...),
+    file: UploadFile = File(...)
+):
+    """
+    Upload a .zip containing a Python repository, extract it safely,
+    and index it using the existing pipeline.
+    """
+    project_id = _extract_and_index_zip(name, file)
     return {"message": "Project indexed successfully", "project_id": project_id}
+
+@app.post("/projects/{project_id}/update-upload")
+def update_project_upload(
+    project_id: int,
+    file: UploadFile = File(...)
+):
+    """
+    Update an existing project by re-uploading a new ZIP.
+    Re-indexes the project under the same name and returns the new project_id.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM projects WHERE id = ?", (project_id,))
+    project = cursor.fetchone()
+    conn.close()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    new_project_id = _extract_and_index_zip(project["name"], file, update_project_id=project_id)
+    return {"message": "Project updated successfully", "project_id": new_project_id}
+
 
 @app.get("/projects/{project_id}")
 def get_project_overview(project_id: int):

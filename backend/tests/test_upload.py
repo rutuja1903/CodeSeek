@@ -146,3 +146,50 @@ def test_upload_missing_name_rejected():
         files={"file": ("sample_shop.zip", zip_bytes, "application/zip")},
     )
     assert response.status_code == 422
+
+
+def test_update_upload_existing_project():
+    """Updating an existing project should re-index it and return a new project ID."""
+    # 1. First upload the base project
+    zip_bytes_a = make_zip_from_dir(SAMPLE_SHOP)
+    res_a = client.post(
+        "/projects/analyze-upload",
+        data={"name": "update_test"},
+        files={"file": ("sample_shop.zip", zip_bytes_a, "application/zip")},
+    )
+    assert res_a.status_code == 200
+    pid_a = res_a.json()["project_id"]
+    
+    overview_a = client.get(f"/projects/{pid_a}").json()
+    assert overview_a["counts"]["files"] == 6
+
+    # 2. Modify the ZIP slightly by adding a dummy file
+    buf = io.BytesIO(zip_bytes_a)
+    with zipfile.ZipFile(buf, "a") as zf:
+        zf.writestr("utils/reporting.py", "def generate_report(): pass")
+    zip_bytes_b = buf.getvalue()
+
+    # 3. Update the existing project
+    res_b = client.post(
+        f"/projects/{pid_a}/update-upload",
+        files={"file": ("sample_shop_v2.zip", zip_bytes_b, "application/zip")},
+    )
+    assert res_b.status_code == 200
+    pid_b = res_b.json()["project_id"]
+    
+    # The same project_id must be preserved
+    assert pid_a == pid_b
+    
+    # 4. Check new overview has the extra file
+    overview_b = client.get(f"/projects/{pid_b}").json()
+    assert overview_b["name"] == "update_test"
+    assert overview_b["counts"]["files"] == 7
+
+
+def test_update_upload_not_found():
+    """Attempting to update a non-existent project returns 404."""
+    response = client.post(
+        "/projects/99999/update-upload",
+        files={"file": ("dummy.zip", make_zip_from_dir(SAMPLE_SHOP), "application/zip")},
+    )
+    assert response.status_code == 404

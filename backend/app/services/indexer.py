@@ -4,12 +4,13 @@ indexer.py -- CodeSeek Indexer Module
 Coordinates scanning, parsing, and storing a project into SQLite.
 """
 
+from typing import Optional
 import json
 from app.services.scanner import scan_repository
 from app.services.parser import parse_repository
 from app.database.core import get_connection, init_db
 
-def index_project(project_name: str, root_dir: str, db_path: str = "codeseek.db"):
+def index_project(project_name: str, root_dir: str, db_path: str = "codeseek.db", update_project_id: Optional[int] = None):
     """
     Index a project by scanning its files, parsing them, and storing
     the metadata in the database.
@@ -23,15 +24,29 @@ def index_project(project_name: str, root_dir: str, db_path: str = "codeseek.db"
     conn = get_connection(db_path)
     cursor = conn.cursor()
 
-    # 1. Full wipe-and-rebuild: Delete existing project with this name
-    cursor.execute("DELETE FROM projects WHERE name = ?", (project_name,))
-    
-    # 2. Create the project record
-    cursor.execute(
-        "INSERT INTO projects (name, root_path) VALUES (?, ?)",
-        (project_name, root_dir)
-    )
-    project_id = cursor.lastrowid
+    # 1. Handle Project Identity
+    if update_project_id is not None:
+        # Update existing project row
+        cursor.execute(
+            "UPDATE projects SET root_path = ?, indexed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (root_dir, update_project_id)
+        )
+        # Wipe child data for this project
+        cursor.execute("DELETE FROM calls WHERE project_id = ?", (update_project_id,))
+        cursor.execute("DELETE FROM imports WHERE project_id = ?", (update_project_id,))
+        cursor.execute("DELETE FROM symbols WHERE project_id = ?", (update_project_id,))
+        cursor.execute("DELETE FROM files WHERE project_id = ?", (update_project_id,))
+        project_id = update_project_id
+    else:
+        # Full wipe-and-rebuild: Delete existing project with this name
+        cursor.execute("DELETE FROM projects WHERE name = ?", (project_name,))
+        
+        # Create the project record
+        cursor.execute(
+            "INSERT INTO projects (name, root_path) VALUES (?, ?)",
+            (project_name, root_dir)
+        )
+        project_id = cursor.lastrowid
 
     # 3. Scan for Python files
     python_files = scan_repository(root_dir)
