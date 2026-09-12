@@ -3,6 +3,7 @@ import Dashboard from './components/Dashboard';
 import Search from './components/Search';
 import FileExplorer from './components/FileExplorer';
 import FunctionExplorer from './components/FunctionExplorer';
+import ClassExplorer from './components/ClassExplorer';
 import AppShell from './components/AppShell';
 import './index.css';
 
@@ -68,6 +69,7 @@ function App() {
         {activeTab === 'search' && <Search overview={overview} />}
         {activeTab === 'files' && <FileExplorer overview={overview} />}
         {activeTab === 'functions' && <FunctionExplorer overview={overview} />}
+        {activeTab === 'classes' && <ClassExplorer overview={overview} />}
       </AppShell>
     );
   }

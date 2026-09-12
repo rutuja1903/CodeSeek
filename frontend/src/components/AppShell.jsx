@@ -36,6 +36,12 @@ function AppShell({ overview, activeTab, onNavigate, children }) {
           >
             Functions
           </button>
+          <button 
+            className={`nav-item ${activeTab === 'classes' ? 'active' : ''}`}
+            onClick={() => onNavigate('classes')}
+          >
+            Classes
+          </button>
         </nav>
       </aside>
 
