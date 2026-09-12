@@ -1,7 +1,11 @@
 import { useState } from 'react';
+import Dashboard from './components/Dashboard';
+import Search from './components/Search';
 import './index.css';
 
 function App() {
+  const [showDashboard, setShowDashboard] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const [name, setName] = useState('');
   const [directoryPath, setDirectoryPath] = useState('');
   const [loading, setLoading] = useState(false);
@@ -20,6 +24,8 @@ function App() {
     setError(null);
     setSuccess(false);
     setOverview(null);
+    setShowDashboard(false);
+    setShowSearch(false);
 
     try {
       const response = await fetch('http://127.0.0.1:8000/projects/analyze', {
@@ -51,6 +57,34 @@ function App() {
       setLoading(false);
     }
   };
+
+  if (showSearch && overview) {
+    return (
+      <div className="container">
+        <header className="header">
+          <h1>CodeSeek</h1>
+          <p className="subtitle">Explore and understand Python codebases</p>
+        </header>
+        <main className="main-content">
+          <Search overview={overview} onBack={() => setShowSearch(false)} />
+        </main>
+      </div>
+    );
+  }
+
+  if (showDashboard && overview) {
+    return (
+      <div className="container">
+        <header className="header">
+          <h1>CodeSeek</h1>
+          <p className="subtitle">Explore and understand Python codebases</p>
+        </header>
+        <main className="main-content">
+          <Dashboard overview={overview} onSearchClick={() => setShowSearch(true)} onBack={() => setShowDashboard(false)} />
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="container">
@@ -123,6 +157,11 @@ function App() {
                 <span className="stat-label">Calls</span>
                 <span className="stat-value">{overview.counts.calls}</span>
               </div>
+            </div>
+            <div style={{ marginTop: '1rem' }}>
+              <button className="btn-primary" onClick={() => setShowDashboard(true)}>
+                Open Dashboard
+              </button>
             </div>
           </div>
         )}
