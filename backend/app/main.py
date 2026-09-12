@@ -124,6 +124,23 @@ def get_project_files(project_id: int):
     
     return files
 
+@app.get("/files/{file_id}")
+def get_individual_file(file_id: int):
+    """
+    Get detailed information for a specific file, including source code.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    return dict(row)
+
 @app.get("/projects/{project_id}/symbols")
 def get_project_symbols(project_id: int, type: Optional[str] = Query(None, description="Filter by symbol type (e.g. function, class)")):
     """

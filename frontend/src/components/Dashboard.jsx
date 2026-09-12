@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import '../index.css';
 
-function Dashboard({ overview, onSearchClick, onBack }) {
+function Dashboard({ overview }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   
@@ -64,41 +64,32 @@ function Dashboard({ overview, onSearchClick, onBack }) {
 
   if (loading) {
     return (
-      <div className="card">
-        <h2>Dashboard: {overview.name}</h2>
-        <p>Loading project metrics...</p>
+      <div className="workspace-view">
+        <h2 style={{ fontSize: '1.8rem', fontWeight: 700, marginBottom: '16px' }}>Dashboard</h2>
+        <p style={{ color: 'var(--text-muted)' }}>Loading project metrics...</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="card">
-        <h2>Dashboard: {overview.name}</h2>
+      <div className="workspace-view">
+        <h2 style={{ fontSize: '1.8rem', fontWeight: 700, marginBottom: '16px' }}>Dashboard</h2>
         <div className="alert error">
           <p><strong>Error:</strong> {error}</p>
         </div>
-        <button className="btn-primary" onClick={onBack}>Back to Home</button>
       </div>
     );
   }
 
   return (
-    <div className="dashboard-container">
-      <div className="dashboard-header card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <h2 style={{ marginTop: 0 }}>Dashboard: {overview.name}</h2>
-            <p className="subtitle" style={{ marginBottom: 0 }}>Project ID: {overview.id}</p>
-          </div>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button className="btn-primary" onClick={onSearchClick}>Search</button>
-            <button className="btn-primary" onClick={onBack}>Back to Home</button>
-          </div>
-        </div>
+    <div className="workspace-view">
+      <div style={{ marginBottom: '32px' }}>
+        <h2 style={{ fontSize: '1.8rem', fontWeight: 700, marginBottom: '4px' }}>Dashboard</h2>
+        <p className="subtitle">Overview for {overview.name} (ID: {overview.id})</p>
       </div>
 
-      <div className="stats-grid" style={{ marginTop: '1.5rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '20px', marginBottom: '32px' }}>
         <div className="stat-box">
           <span className="stat-label">Total Files</span>
           <span className="stat-value">{overview.counts.files}</span>
@@ -117,61 +108,63 @@ function Dashboard({ overview, onSearchClick, onBack }) {
         </div>
       </div>
 
-      <div className="card" style={{ marginTop: '1.5rem' }}>
-        <h3 style={{ marginTop: 0 }}>Code Breakdown</h3>
-        <div className="stats-grid">
-          <div className="stat-box">
-            <span className="stat-label">Classes</span>
-            <span className="stat-value">{symbolStats.classes}</span>
-          </div>
-          <div className="stat-box">
-            <span className="stat-label">Functions</span>
-            <span className="stat-value">{symbolStats.functions}</span>
-          </div>
-          <div className="stat-box">
-            <span className="stat-label">Methods</span>
-            <span className="stat-value">{symbolStats.methods}</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginTop: '1.5rem' }}>
-        <h3 style={{ marginTop: 0 }}>Parsing Status</h3>
-        <div className="stats-grid">
-          <div className="stat-box">
-            <span className="stat-label">Successfully Parsed</span>
-            <span className="stat-value" style={{ color: 'var(--success-color, #10b981)' }}>{fileStats.success}</span>
-          </div>
-          <div className="stat-box">
-            <span className="stat-label">Failed to Parse</span>
-            <span className="stat-value" style={{ color: fileStats.failed > 0 ? 'var(--error-color, #ef4444)' : 'inherit' }}>{fileStats.failed}</span>
-          </div>
-        </div>
-      </div>
-
-      {graphStats && (
-        <div className="card" style={{ marginTop: '1.5rem' }}>
-          <h3 style={{ marginTop: 0 }}>Graph Metrics</h3>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px' }}>
+        <div className="card">
+          <h3 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.1rem', fontWeight: 600 }}>Code Breakdown</h3>
           <div className="stats-grid">
             <div className="stat-box">
-              <span className="stat-label">File Dependencies (Nodes)</span>
-              <span className="stat-value">{graphStats.file_dependencies?.node_count || 0}</span>
+              <span className="stat-label">Classes</span>
+              <span className="stat-value">{symbolStats.classes}</span>
             </div>
             <div className="stat-box">
-              <span className="stat-label">File Dependencies (Edges)</span>
-              <span className="stat-value">{graphStats.file_dependencies?.edge_count || 0}</span>
+              <span className="stat-label">Functions</span>
+              <span className="stat-value">{symbolStats.functions}</span>
             </div>
             <div className="stat-box">
-              <span className="stat-label">Function Calls (Nodes)</span>
-              <span className="stat-value">{graphStats.function_calls?.node_count || 0}</span>
-            </div>
-            <div className="stat-box">
-              <span className="stat-label">Function Calls (Edges)</span>
-              <span className="stat-value">{graphStats.function_calls?.edge_count || 0}</span>
+              <span className="stat-label">Methods</span>
+              <span className="stat-value">{symbolStats.methods}</span>
             </div>
           </div>
         </div>
-      )}
+
+        <div className="card">
+          <h3 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.1rem', fontWeight: 600 }}>Parsing Status</h3>
+          <div className="stats-grid">
+            <div className="stat-box">
+              <span className="stat-label">Successfully Parsed</span>
+              <span className="stat-value" style={{ color: 'var(--success-text)' }}>{fileStats.success}</span>
+            </div>
+            <div className="stat-box">
+              <span className="stat-label">Failed to Parse</span>
+              <span className="stat-value" style={{ color: fileStats.failed > 0 ? 'var(--error-text)' : 'inherit' }}>{fileStats.failed}</span>
+            </div>
+          </div>
+        </div>
+
+        {graphStats && (
+          <div className="card" style={{ gridColumn: '1 / -1' }}>
+            <h3 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.1rem', fontWeight: 600 }}>Graph Metrics</h3>
+            <div className="stats-grid">
+              <div className="stat-box">
+                <span className="stat-label">File Dependencies (Nodes)</span>
+                <span className="stat-value">{graphStats.file_dependencies?.node_count || 0}</span>
+              </div>
+              <div className="stat-box">
+                <span className="stat-label">File Dependencies (Edges)</span>
+                <span className="stat-value">{graphStats.file_dependencies?.edge_count || 0}</span>
+              </div>
+              <div className="stat-box">
+                <span className="stat-label">Function Calls (Nodes)</span>
+                <span className="stat-value">{graphStats.function_calls?.node_count || 0}</span>
+              </div>
+              <div className="stat-box">
+                <span className="stat-label">Function Calls (Edges)</span>
+                <span className="stat-value">{graphStats.function_calls?.edge_count || 0}</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

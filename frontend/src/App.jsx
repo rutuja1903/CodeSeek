@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import Dashboard from './components/Dashboard';
 import Search from './components/Search';
+import FileExplorer from './components/FileExplorer';
+import AppShell from './components/AppShell';
 import './index.css';
 
 function App() {
-  const [showDashboard, setShowDashboard] = useState(false);
-  const [showSearch, setShowSearch] = useState(false);
+  const [activeTab, setActiveTab] = useState(null); // null means home
   const [name, setName] = useState('');
   const [directoryPath, setDirectoryPath] = useState('');
   const [loading, setLoading] = useState(false);
@@ -24,8 +25,7 @@ function App() {
     setError(null);
     setSuccess(false);
     setOverview(null);
-    setShowDashboard(false);
-    setShowSearch(false);
+    setActiveTab(null);
 
     try {
       const response = await fetch('http://127.0.0.1:8000/projects/analyze', {
@@ -49,6 +49,7 @@ function App() {
       if (overviewRes.ok) {
         const overviewData = await overviewRes.json();
         setOverview(overviewData);
+        setActiveTab('dashboard'); // Auto navigate to dashboard on success
       }
       
     } catch (err) {
@@ -58,36 +59,20 @@ function App() {
     }
   };
 
-  if (showSearch && overview) {
+  // If we have a project loaded and an active tab, render the AppShell
+  if (activeTab && overview) {
     return (
-      <div className="container">
-        <header className="header">
-          <h1>CodeSeek</h1>
-          <p className="subtitle">Explore and understand Python codebases</p>
-        </header>
-        <main className="main-content">
-          <Search overview={overview} onBack={() => setShowSearch(false)} />
-        </main>
-      </div>
+      <AppShell overview={overview} activeTab={activeTab} onNavigate={setActiveTab}>
+        {activeTab === 'dashboard' && <Dashboard overview={overview} />}
+        {activeTab === 'search' && <Search overview={overview} />}
+        {activeTab === 'files' && <FileExplorer overview={overview} />}
+      </AppShell>
     );
   }
 
-  if (showDashboard && overview) {
-    return (
-      <div className="container">
-        <header className="header">
-          <h1>CodeSeek</h1>
-          <p className="subtitle">Explore and understand Python codebases</p>
-        </header>
-        <main className="main-content">
-          <Dashboard overview={overview} onSearchClick={() => setShowSearch(true)} onBack={() => setShowDashboard(false)} />
-        </main>
-      </div>
-    );
-  }
-
+  // Otherwise render the home screen
   return (
-    <div className="container">
+    <div className="home-container">
       <header className="header">
         <h1>CodeSeek</h1>
         <p className="subtitle">Explore and understand Python codebases</p>
@@ -130,39 +115,6 @@ function App() {
         {error && (
           <div className="alert error">
             <p><strong>Error:</strong> {error}</p>
-          </div>
-        )}
-
-        {success && overview && (
-          <div className="alert success">
-            <h3>Analysis Complete</h3>
-            <div className="stats-grid">
-              <div className="stat-box">
-                <span className="stat-label">Project ID</span>
-                <span className="stat-value">{overview.id}</span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-label">Files</span>
-                <span className="stat-value">{overview.counts.files}</span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-label">Symbols</span>
-                <span className="stat-value">{overview.counts.symbols}</span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-label">Imports</span>
-                <span className="stat-value">{overview.counts.imports}</span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-label">Calls</span>
-                <span className="stat-value">{overview.counts.calls}</span>
-              </div>
-            </div>
-            <div style={{ marginTop: '1rem' }}>
-              <button className="btn-primary" onClick={() => setShowDashboard(true)}>
-                Open Dashboard
-              </button>
-            </div>
           </div>
         )}
       </main>
