@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import '../index.css';
 
-function Search({ overview }) {
+function Search({ overview, onNavigateToSymbol, onNavigateToFile }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -81,15 +81,36 @@ function Search({ overview }) {
           ) : (
              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                {results.map((res, index) => (
-                 <div key={res.id + index} style={{ 
-                   padding: '16px', 
-                   backgroundColor: 'var(--surface-color)',
-                   border: '1px solid var(--border-color)',
-                   borderLeft: '4px solid var(--primary-color)',
-                   borderRadius: '6px',
-                   display: 'flex',
-                   justifyContent: 'space-between',
-                 }}>
+                 <div 
+                   key={res.id + index} 
+                   onClick={() => {
+                     if (res.type === 'symbol' && onNavigateToSymbol) {
+                       onNavigateToSymbol(res.id, res.symbol_type);
+                     } else if (res.type === 'file' && onNavigateToFile) {
+                       const match = res.id.match(/^file_(\d+)$/);
+                       if (match) {
+                         const fileIdNum = parseInt(match[1], 10);
+                         onNavigateToFile(fileIdNum, null, null);
+                       }
+                     }
+                   }}
+                   onMouseEnter={(e) => {
+                     e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+                   }}
+                   onMouseLeave={(e) => {
+                     e.currentTarget.style.backgroundColor = 'var(--surface-color)';
+                   }}
+                   style={{ 
+                     padding: '16px', 
+                     backgroundColor: 'var(--surface-color)',
+                     border: '1px solid var(--border-color)',
+                     borderLeft: '4px solid var(--primary-color)',
+                     borderRadius: '6px',
+                     display: 'flex',
+                     justifyContent: 'space-between',
+                     cursor: 'pointer',
+                     transition: 'background-color 0.1s',
+                   }}>
                     <div style={{ flex: 1, minWidth: 0, paddingRight: '16px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
                         <span style={{ fontSize: '1.1rem', fontWeight: '600', color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{res.name}</span>

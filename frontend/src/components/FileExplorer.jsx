@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import '../index.css';
 
 const TreeNode = ({ node, onSelect, selectedId }) => {
@@ -50,13 +50,44 @@ const TreeNode = ({ node, onSelect, selectedId }) => {
   );
 };
 
-function FileExplorer({ overview }) {
+function FileExplorer({ overview, fileNavTarget, clearNavTarget }) {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileDetails, setFileDetails] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  
+  const [highlightRange, setHighlightRange] = useState(null);
+  const scrollTargetRef = useRef(null);
+
+  // Consume navigation target
+  useEffect(() => {
+    if (fileNavTarget && files.length > 0) {
+      const targetFile = files.find(f => f.id === fileNavTarget.fileId);
+      if (targetFile) {
+        setSelectedFile(targetFile);
+        if (fileNavTarget.startLine > 0 && fileNavTarget.endLine >= fileNavTarget.startLine) {
+          setHighlightRange({
+            start: fileNavTarget.startLine,
+            end: fileNavTarget.endLine
+          });
+        } else {
+          setHighlightRange(null);
+        }
+      }
+      if (clearNavTarget) {
+        clearNavTarget();
+      }
+    }
+  }, [fileNavTarget, files, clearNavTarget]);
+
+  // Scroll to target line when source is ready
+  useEffect(() => {
+    if (scrollTargetRef.current && !loadingDetails && fileDetails?.source) {
+      scrollTargetRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [loadingDetails, fileDetails, highlightRange]);
 
   useEffect(() => {
     const fetchFiles = async () => {
@@ -133,7 +164,14 @@ function FileExplorer({ overview }) {
           ) : error ? (
             <p className="alert error">{error}</p>
           ) : (
-            <TreeNode node={treeRoot} onSelect={setSelectedFile} selectedId={selectedFile?.id} />
+            <TreeNode 
+              node={treeRoot} 
+              onSelect={(file) => {
+                setSelectedFile(file);
+                setHighlightRange(null);
+              }} 
+              selectedId={selectedFile?.id} 
+            />
           )}
         </div>
       </div>
@@ -181,7 +219,36 @@ function FileExplorer({ overview }) {
                       color: 'var(--text-main)', 
                       whiteSpace: 'pre'
                     }}>
-                      {fileDetails.source}
+                      {fileDetails.source.split('\n').map((line, idx) => {
+                        const lineNum = idx + 1;
+                        const isHighlighted = highlightRange && lineNum >= highlightRange.start && lineNum <= highlightRange.end;
+                        const isStart = highlightRange && lineNum === highlightRange.start;
+                        return (
+                          <div 
+                            key={idx}
+                            ref={isStart ? scrollTargetRef : null}
+                            style={{ 
+                              backgroundColor: isHighlighted ? 'rgba(59, 130, 246, 0.2)' : 'transparent',
+                              display: 'flex'
+                            }}
+                          >
+                            <span style={{ 
+                              display: 'inline-block', 
+                              width: '40px', 
+                              minWidth: '40px', 
+                              textAlign: 'right', 
+                              paddingRight: '12px', 
+                              color: 'var(--text-muted)', 
+                              userSelect: 'none',
+                              opacity: 0.5,
+                              flexShrink: 0
+                            }}>
+                              {lineNum}
+                            </span>
+                            <span style={{ flexShrink: 0 }}>{line === '' ? '\n' : line}</span>
+                          </div>
+                        );
+                      })}
                     </code>
                   </pre>
                 ) : (

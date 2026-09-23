@@ -11,12 +11,28 @@ import './index.css';
 
 function App() {
   const [activeTab, setActiveTab] = useState(null); // null means home
+  const [fileNavTarget, setFileNavTarget] = useState(null);
+  const [symbolNavTarget, setSymbolNavTarget] = useState(null);
   const [name, setName] = useState('');
   const [selectedFile, setSelectedFile] = useState(null); // File object from <input type="file">
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [overview, setOverview] = useState(null);
   const fileInputRef = useRef(null);
+
+  const handleNavigateToFile = (fileId, startLine, endLine) => {
+    setFileNavTarget({ fileId, startLine, endLine });
+    setActiveTab('files');
+  };
+
+  const handleNavigateToSymbol = (symbolId, symbolType) => {
+    setSymbolNavTarget(symbolId);
+    if (symbolType === 'class') {
+      setActiveTab('classes');
+    } else {
+      setActiveTab('functions');
+    }
+  };
 
   const handleFileChange = (e) => {
     const f = e.target.files?.[0] || null;
@@ -85,10 +101,10 @@ function App() {
     return (
       <AppShell overview={overview} activeTab={activeTab} onNavigate={setActiveTab} onUpdateOverview={setOverview}>
         {activeTab === 'dashboard' && <Dashboard overview={overview} />}
-        {activeTab === 'search' && <Search overview={overview} />}
-        {activeTab === 'files' && <FileExplorer overview={overview} />}
-        {activeTab === 'functions' && <FunctionExplorer overview={overview} />}
-        {activeTab === 'classes' && <ClassExplorer overview={overview} />}
+        {activeTab === 'search' && <Search overview={overview} onNavigateToSymbol={handleNavigateToSymbol} onNavigateToFile={handleNavigateToFile} />}
+        {activeTab === 'files' && <FileExplorer overview={overview} fileNavTarget={fileNavTarget} clearNavTarget={() => setFileNavTarget(null)} />}
+        {activeTab === 'functions' && <FunctionExplorer overview={overview} onNavigateToFile={handleNavigateToFile} symbolNavTarget={symbolNavTarget} clearSymbolNavTarget={() => setSymbolNavTarget(null)} />}
+        {activeTab === 'classes' && <ClassExplorer overview={overview} onNavigateToFile={handleNavigateToFile} symbolNavTarget={symbolNavTarget} clearSymbolNavTarget={() => setSymbolNavTarget(null)} />}
         {activeTab === 'graphs' && <DependencyGraphs overview={overview} />}
         {activeTab === 'statistics' && <Statistics overview={overview} />}
       </AppShell>

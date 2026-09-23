@@ -8,6 +8,7 @@ import tempfile
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(THIS_DIR, ".."))
 
+from app.database.core import init_db
 from app.services.indexer import index_project
 from app.services.graphs import build_file_dependency_graph, build_call_graph, graph_to_json, calculate_graph_metrics
 
@@ -80,10 +81,85 @@ def test_call_graph():
         if os.path.exists(db_path):
             os.remove(db_path)
 
+def test_cycles():
+    from app.database.core import get_connection
+    f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db_path = f.name
+    f.close()
+    try:
+        init_db(db_path)
+        conn = get_connection(db_path)
+        c = conn.cursor()
+        
+        c.execute("INSERT INTO projects (name, root_path) VALUES (?, ?)", ("cycle_test", "/tmp/cycle_test"))
+        pid = c.lastrowid
+        
+        c.execute("INSERT INTO files (project_id, relative_path, language, line_count, parse_status) VALUES (?, ?, ?, ?, ?)", (pid, "a.py", "python", 10, 1))
+        fa = c.lastrowid
+        c.execute("INSERT INTO files (project_id, relative_path, language, line_count, parse_status) VALUES (?, ?, ?, ?, ?)", (pid, "b.py", "python", 10, 1))
+        fb = c.lastrowid
+        c.execute("INSERT INTO files (project_id, relative_path, language, line_count, parse_status) VALUES (?, ?, ?, ?, ?)", (pid, "c.py", "python", 10, 1))
+        fc = c.lastrowid
+        
+        # 1. file circular dependency: a.py -> b.py -> a.py
+        c.execute("INSERT INTO imports (project_id, file_id, module) VALUES (?, ?, ?)", (pid, fa, "b"))
+        c.execute("INSERT INTO imports (project_id, file_id, module) VALUES (?, ?, ?)", (pid, fb, "a"))
+        
+        # 2. symbols
+        c.execute("INSERT INTO symbols (project_id, file_id, deterministic_id, name, symbol_type) VALUES (?, ?, ?, ?, ?)", (pid, fa, "a.py::A", "A", "function"))
+        c.execute("INSERT INTO symbols (project_id, file_id, deterministic_id, name, symbol_type) VALUES (?, ?, ?, ?, ?)", (pid, fb, "b.py::B", "B", "function"))
+        c.execute("INSERT INTO symbols (project_id, file_id, deterministic_id, name, symbol_type) VALUES (?, ?, ?, ?, ?)", (pid, fc, "c.py::C", "C", "function"))
+        
+        # function self-recursion: A -> A
+        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "a.py::A", "A"))
+        
+        # two-function cycle: B -> A, A -> B
+        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "b.py::B", "A"))
+        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "a.py::A", "B"))
+        
+        # longer function cycle: A -> B -> C -> A
+        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "b.py::B", "C"))
+        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "c.py::C", "A"))
+        
+        # unresolved-call
+        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "c.py::C", "unknown_func"))
+        
+        conn.commit()
+        conn.close()
+        
+        # Test file graph
+        G, unres = build_file_dependency_graph(pid, db_path)
+        data = graph_to_json(G, unres)
+        
+        assert data["cycle_count"] == 1
+        assert len(data["cycles"][0]) == 2
+        assert "a.py" in data["cycles"][0] and "b.py" in data["cycles"][0]
+        
+        # Test call graph
+        G2, unres2 = build_call_graph(pid, db_path)
+        data2 = graph_to_json(G2, unres2)
+        
+        # Expect self-recursion: A->A
+        assert data2["self_loop_count"] == 1
+        assert data2["self_loops"][0] == ["a.py::A"]
+        
+        # Unresolved behavior untouched
+        unres_reasons = [u["callee_raw"] for u in data2["unresolved"]]
+        assert "unknown_func" in unres_reasons
+        
+        assert data2["cycle_count"] == 2
+        lengths = [len(c) for c in data2["cycles"]]
+        assert sorted(lengths) == [2, 3]
+
+    finally:
+        if os.path.exists(db_path):
+            os.remove(db_path)
+
 if __name__ == "__main__":
     tests = [
         test_file_dependency_graph,
-        test_call_graph
+        test_call_graph,
+        test_cycles
     ]
     
     passed = 0

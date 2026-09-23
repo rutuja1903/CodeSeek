@@ -84,9 +84,7 @@ def build_file_dependency_graph(project_id: int, db_path: str = "codeseek.db"):
                 target_path = module_to_file[module_part]
                 
         if target_path:
-            # Add edge if not self-import
-            if src_path != target_path:
-                G.add_edge(src_path, target_path, type="imports")
+            G.add_edge(src_path, target_path, type="imports")
         else:
             unresolved.append({
                 "source_file": src_path,
@@ -162,8 +160,7 @@ def build_call_graph(project_id: int, db_path: str = "codeseek.db"):
         candidates = symbol_names_map.get(callee_short, [])
         if len(candidates) == 1:
             target = candidates[0]
-            if caller != target:
-                G.add_edge(caller, target, type="calls")
+            G.add_edge(caller, target, type="calls")
         else:
             unresolved.append({
                 "caller": caller,
@@ -174,9 +171,10 @@ def build_call_graph(project_id: int, db_path: str = "codeseek.db"):
     conn.close()
     return G, unresolved
 
-def graph_to_json(G, unresolved):
+def graph_to_json(G, unresolved, max_cycles=50):
     """
     Convert a NetworkX graph and unresolved list into a JSON-friendly dict.
+    Includes explicit cycle and self-loop detection (capped at max_cycles).
     """
     nodes = []
     for node, data in G.nodes(data=True):
@@ -192,10 +190,34 @@ def graph_to_json(G, unresolved):
             "type": data.get("type", "unknown")
         })
         
+    multi_cycles = []
+    self_loops = []
+    cycles_truncated = False
+    
+    try:
+        cycle_gen = nx.simple_cycles(G)
+        count = 0
+        for c in cycle_gen:
+            if count >= max_cycles:
+                cycles_truncated = True
+                break
+            if len(c) == 1:
+                self_loops.append(c)
+            else:
+                multi_cycles.append(c)
+            count += 1
+    except nx.NetworkXNotImplemented:
+        pass
+        
     return {
         "nodes": nodes,
         "edges": edges,
-        "unresolved": unresolved
+        "unresolved": unresolved,
+        "cycles": multi_cycles,
+        "self_loops": self_loops,
+        "cycles_truncated": cycles_truncated,
+        "cycle_count": len(multi_cycles),
+        "self_loop_count": len(self_loops)
     }
 
 def calculate_graph_metrics(G):

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import '../index.css';
 
-function FunctionExplorer({ overview }) {
+function FunctionExplorer({ overview, onNavigateToFile, symbolNavTarget, clearSymbolNavTarget }) {
   const [symbols, setSymbols] = useState([]);
   const [fileMap, setFileMap] = useState({});
   const [loading, setLoading] = useState(true);
@@ -89,6 +89,21 @@ function FunctionExplorer({ overview }) {
 
     fetchDetails();
   }, [selectedSymbol]);
+
+  // Consume navigation target
+  useEffect(() => {
+    if (symbolNavTarget && !loading) {
+      if (symbols.length > 0) {
+        const targetSym = symbols.find(s => s.id === symbolNavTarget || s.deterministic_id === symbolNavTarget);
+        if (targetSym) {
+          setSelectedSymbol(targetSym);
+        }
+      }
+      if (clearSymbolNavTarget) {
+        clearSymbolNavTarget();
+      }
+    }
+  }, [symbolNavTarget, symbols, loading, clearSymbolNavTarget]);
 
   // Frontend filtering and grouping
   const groupedFilteredSymbols = useMemo(() => {
@@ -222,8 +237,26 @@ function FunctionExplorer({ overview }) {
                    <h2 style={{ margin: '0 0 8px 0', fontSize: '1.4rem' }}>{selectedSymbol.name}</h2>
                    <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{selectedSymbol.deterministic_id}</div>
                  </div>
-                 <div style={{ padding: '4px 12px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '16px', fontSize: '0.85rem', fontWeight: 600 }}>
-                   {selectedSymbol.symbol_type}
+                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                   {selectedSymbol.file_id && (
+                     <button 
+                       onClick={() => onNavigateToFile(selectedSymbol.file_id, selectedSymbol.start_line, selectedSymbol.end_line)}
+                       style={{ 
+                         padding: '4px 12px', 
+                         backgroundColor: 'transparent', 
+                         border: '1px solid var(--primary-color)', 
+                         color: 'var(--primary-color)', 
+                         borderRadius: '16px', 
+                         fontSize: '0.85rem', 
+                         fontWeight: 600,
+                         cursor: 'pointer'
+                       }}>
+                       Open in File Explorer
+                     </button>
+                   )}
+                   <div style={{ padding: '4px 12px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '16px', fontSize: '0.85rem', fontWeight: 600 }}>
+                     {selectedSymbol.symbol_type}
+                   </div>
                  </div>
                </div>
 
@@ -300,7 +333,29 @@ function FunctionExplorer({ overview }) {
                               color: 'var(--text-main)', 
                               whiteSpace: 'pre'
                             }}>
-                              {sourceSnippet}
+                              {sourceSnippet.split('\n').map((line, idx) => {
+                                const lineNum = typeof selectedSymbol.start_line === 'number' 
+                                  ? Math.max(1, selectedSymbol.start_line) + idx 
+                                  : '';
+                                return (
+                                  <div key={idx} style={{ display: 'flex' }}>
+                                    <span style={{ 
+                                      display: 'inline-block', 
+                                      width: '40px', 
+                                      minWidth: '40px', 
+                                      textAlign: 'right', 
+                                      paddingRight: '12px', 
+                                      color: 'var(--text-muted)', 
+                                      userSelect: 'none',
+                                      opacity: 0.5,
+                                      flexShrink: 0
+                                    }}>
+                                      {lineNum}
+                                    </span>
+                                    <span style={{ flexShrink: 0 }}>{line === '' ? '\n' : line}</span>
+                                  </div>
+                                );
+                              })}
                             </code>
                           </pre>
                         ) : (

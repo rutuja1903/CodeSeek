@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import '../index.css';
 
-function ClassExplorer({ overview }) {
+function ClassExplorer({ overview, onNavigateToFile, symbolNavTarget, clearSymbolNavTarget }) {
   const [symbols, setSymbols] = useState([]);
   const [allMethods, setAllMethods] = useState([]);
   const [fileMap, setFileMap] = useState({});
@@ -91,6 +91,21 @@ function ClassExplorer({ overview }) {
 
     fetchDetails();
   }, [selectedClass]);
+
+  // Consume navigation target
+  useEffect(() => {
+    if (symbolNavTarget && !loading) {
+      if (symbols.length > 0) {
+        const targetSym = symbols.find(s => s.id === symbolNavTarget || s.deterministic_id === symbolNavTarget);
+        if (targetSym) {
+          setSelectedClass(targetSym);
+        }
+      }
+      if (clearSymbolNavTarget) {
+        clearSymbolNavTarget();
+      }
+    }
+  }, [symbolNavTarget, symbols, loading, clearSymbolNavTarget]);
 
   // Frontend filtering and grouping
   const groupedFilteredSymbols = useMemo(() => {
@@ -234,8 +249,26 @@ function ClassExplorer({ overview }) {
                    <h2 style={{ margin: '0 0 8px 0', fontSize: '1.4rem' }}>{selectedClass.name}</h2>
                    <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{selectedClass.deterministic_id}</div>
                  </div>
-                 <div style={{ padding: '4px 12px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '16px', fontSize: '0.85rem', fontWeight: 600 }}>
-                   class
+                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                   {selectedClass.file_id && (
+                     <button 
+                       onClick={() => onNavigateToFile(selectedClass.file_id, selectedClass.start_line, selectedClass.end_line)}
+                       style={{ 
+                         padding: '4px 12px', 
+                         backgroundColor: 'transparent', 
+                         border: '1px solid var(--primary-color)', 
+                         color: 'var(--primary-color)', 
+                         borderRadius: '16px', 
+                         fontSize: '0.85rem', 
+                         fontWeight: 600,
+                         cursor: 'pointer'
+                       }}>
+                       Open in File Explorer
+                     </button>
+                   )}
+                   <div style={{ padding: '4px 12px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '16px', fontSize: '0.85rem', fontWeight: 600 }}>
+                     class
+                   </div>
                  </div>
                </div>
 
@@ -329,7 +362,29 @@ function ClassExplorer({ overview }) {
                               color: 'var(--text-main)', 
                               whiteSpace: 'pre'
                             }}>
-                              {sourceSnippet}
+                              {sourceSnippet.split('\n').map((line, idx) => {
+                                const lineNum = typeof selectedClass.start_line === 'number' 
+                                  ? Math.max(1, selectedClass.start_line) + idx 
+                                  : '';
+                                return (
+                                  <div key={idx} style={{ display: 'flex' }}>
+                                    <span style={{ 
+                                      display: 'inline-block', 
+                                      width: '40px', 
+                                      minWidth: '40px', 
+                                      textAlign: 'right', 
+                                      paddingRight: '12px', 
+                                      color: 'var(--text-muted)', 
+                                      userSelect: 'none',
+                                      opacity: 0.5,
+                                      flexShrink: 0
+                                    }}>
+                                      {lineNum}
+                                    </span>
+                                    <span style={{ flexShrink: 0 }}>{line === '' ? '\n' : line}</span>
+                                  </div>
+                                );
+                              })}
                             </code>
                           </pre>
                         ) : (

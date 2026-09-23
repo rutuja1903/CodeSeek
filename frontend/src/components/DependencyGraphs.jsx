@@ -185,10 +185,92 @@ function UnresolvedPanel({ items, graphType }) {
   );
 }
 
+function CircularDependenciesPanel({ cycles, selfLoops, graphType, truncated, nodesData }) {
+  const [open, setOpen] = useState(false);
+
+  // Map networkx node ID to human-readable label
+  const nodeMap = useMemo(() => {
+    const map = {};
+    if (nodesData) {
+      nodesData.forEach(n => {
+        map[n.id] = n.label || n.id;
+      });
+    }
+    return map;
+  }, [nodesData]);
+
+  const cycleCount = cycles?.length || 0;
+  const selfLoopCount = selfLoops?.length || 0;
+  const total = cycleCount + selfLoopCount;
+
+  const getLabel = (id) => nodeMap[id] || id;
+
+  return (
+    <div style={{ marginTop: '12px', backgroundColor: 'var(--surface-color)', border: '1px solid var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{ width: '100%', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '10px 14px', textAlign: 'left', display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}
+      >
+        <span>
+          Circular Dependencies ({total}{truncated ? '+' : ''})
+        </span>
+        <span>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}>
+          {total === 0 ? (
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+              No circular dependencies detected.
+            </div>
+          ) : (
+            <>
+              {truncated && (
+                <div style={{ marginBottom: '10px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  Note: Cycle detection stopped early due to high graph complexity. Showing partial results.
+                </div>
+              )}
+              <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {selfLoopCount > 0 && (
+                  <div>
+                    <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                      {graphType === 'files' ? 'Self-References' : 'Recursions (Self-Calls)'}
+                    </div>
+                    {selfLoops.map((loop, idx) => (
+                      <div key={`sl-${idx}`} style={{ fontSize: '0.78rem', fontFamily: 'monospace', color: '#cbd5e1' }}>
+                        {getLabel(loop[0])} → {getLabel(loop[0])}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                {cycleCount > 0 && (
+                  <div>
+                    <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '4px', marginTop: selfLoopCount > 0 ? '8px' : 0 }}>
+                      {graphType === 'files' ? 'Circular File Dependencies' : 'Call Cycles'}
+                    </div>
+                    {cycles.map((cycle, idx) => (
+                      <div key={`cy-${idx}`} style={{ fontSize: '0.78rem', fontFamily: 'monospace', color: '#cbd5e1' }}>
+                        {cycle.map(getLabel).join(' → ')} → {getLabel(cycle[0])}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // The main graph canvas sub-component keeps React Flow state internal
 function GraphCanvas({ backendData, graphType, labelKey, idKey }) {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const initialNodes = useMemo(() => backendData ? toFlowNodes(backendData.nodes, labelKey, idKey) : [], [backendData, labelKey, idKey]);
+  const initialEdges = useMemo(() => backendData ? toFlowEdges(backendData.edges) : [], [backendData]);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [selectedNode, setSelectedNode] = useState(null);
 
   const { inDeg, outDeg } = useMemo(() => computeDegrees(backendData?.edges || []), [backendData]);
@@ -374,6 +456,13 @@ export default function DependencyGraphs({ overview }) {
             />
           </div>
           <div style={{ flexShrink: 0 }}>
+            <CircularDependenciesPanel 
+              cycles={activeData.cycles} 
+              selfLoops={activeData.self_loops} 
+              truncated={activeData.cycles_truncated}
+              graphType={graphType}
+              nodesData={activeData.nodes}
+            />
             <UnresolvedPanel items={activeData.unresolved} graphType={graphType} />
           </div>
         </>
