@@ -1,5 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { SymbolInsights, DetailTabs, UnusedFilter, UnusedBadge } from './CodeInsights';
+import { usePotentiallyUnused } from './analysisHooks';
+import Icon from './ui/Icon';
+import { Banner, EmptyState, LoadingState } from './ui/ui';
 import '../index.css';
+
+const DETAIL_TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'references', label: 'References' },
+  { id: 'impact', label: 'Impact' },
+];
 
 function ClassExplorer({ overview, onNavigateToFile, symbolNavTarget, clearSymbolNavTarget }) {
   const [symbols, setSymbols] = useState([]);
@@ -14,6 +24,26 @@ function ClassExplorer({ overview, onNavigateToFile, symbolNavTarget, clearSymbo
   const [classDetails, setClassDetails] = useState(null);
   const [sourceSnippet, setSourceSnippet] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+
+  // Code intelligence: detail tab, and the "potentially unused" list filter
+  const [detailTab, setDetailTab] = useState('overview');
+  const [showUnusedOnly, setShowUnusedOnly] = useState(false);
+  const unused = usePotentiallyUnused(overview.id, showUnusedOnly);
+
+  // Open a result location in the File Explorer (relative path survives re-indexing)
+  const handleOpenLocation = (fileId, startLine, endLine, relativePath) => {
+    onNavigateToFile(fileId, startLine, endLine, relativePath);
+  };
+
+  // Select a related class here; anything else (e.g. a method) opens at its definition
+  const handleSelectRelated = (summary) => {
+    const match = symbols.find(s => s.deterministic_id === summary.symbol_id);
+    if (match) {
+      setSelectedClass(match);
+    } else {
+      handleOpenLocation(summary.file_id, summary.start_line, summary.end_line, summary.relative_path);
+    }
+  };
 
   useEffect(() => {
     const fetchSymbolsAndFiles = async () => {
@@ -111,6 +141,7 @@ function ClassExplorer({ overview, onNavigateToFile, symbolNavTarget, clearSymbo
   const groupedFilteredSymbols = useMemo(() => {
     const q = filterQuery.toLowerCase();
     const filtered = symbols.filter(s => {
+      if (showUnusedOnly && !unused.findings?.has(s.deterministic_id)) return false;
       const matchName = s.name.toLowerCase().includes(q);
       const filePath = fileMap[s.file_id]?.relative_path?.toLowerCase() || '';
       const matchPath = filePath.includes(q);
@@ -137,7 +168,9 @@ function ClassExplorer({ overview, onNavigateToFile, symbolNavTarget, clearSymbo
       classes: groups[key]
     }));
     return sortedGroups;
-  }, [symbols, fileMap, filterQuery]);
+  }, [symbols, fileMap, filterQuery, showUnusedOnly, unused.findings]);
+
+  const unusedCount = unused.findings ? symbols.filter(s => unused.findings.has(s.deterministic_id)).length : null;
 
   // Identify methods belonging to the currently selected class
   const selectedClassMethods = useMemo(() => {
@@ -146,258 +179,221 @@ function ClassExplorer({ overview, onNavigateToFile, symbolNavTarget, clearSymbo
   }, [selectedClass, allMethods]);
 
   return (
-    <div style={{ display: 'flex', height: '100%', width: '100%', overflow: 'hidden' }}>
+    <div className="explorer">
       {/* Column 2: Filter & Class List */}
-      <div style={{ 
-        width: '320px', 
-        borderRight: '1px solid var(--border-color)', 
-        display: 'flex', 
-        flexDirection: 'column',
-        backgroundColor: 'var(--surface-color)',
-        flexShrink: 0
-      }}>
-        <div style={{ padding: '16px', borderBottom: '1px solid var(--border-color)' }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem', fontWeight: 600 }}>Class Explorer</h3>
-          <input
-            type="text"
-            placeholder="Filter by name, path..."
-            value={filterQuery}
-            onChange={(e) => setFilterQuery(e.target.value)}
-            style={{ 
-              width: '100%', 
-              padding: '8px 12px', 
-              borderRadius: '4px', 
-              border: '1px solid var(--border-color)', 
-              backgroundColor: 'var(--bg-color)', 
-              color: 'var(--text-main)',
-              fontSize: '0.9rem'
-            }}
+      <aside className="explorer-sidebar" aria-label="Classes">
+        <div className="explorer-sidebar-header">
+          <div className="explorer-sidebar-title">
+            <h2 className="section-title"><Icon name="class" size={13} /> Classes</h2>
+            {!loading && !error && <span className="badge">{symbols.length}</span>}
+          </div>
+          <div className="input-with-icon">
+            <Icon name="search" size={13} />
+            <input
+              type="search"
+              className="input"
+              placeholder="Filter by name, path..."
+              aria-label="Filter classes"
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+            />
+          </div>
+          <UnusedFilter
+            active={showUnusedOnly}
+            onToggle={() => setShowUnusedOnly(v => !v)}
+            unused={unused}
+            count={unusedCount}
           />
         </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
+        <div className="explorer-sidebar-body">
           {loading ? (
-            <p style={{ color: 'var(--text-muted)' }}>Loading classes...</p>
+            <LoadingState>Loading classes...</LoadingState>
           ) : error ? (
-            <p className="alert error">{error}</p>
+            <Banner type="error" boxed>{error}</Banner>
+          ) : groupedFilteredSymbols.length === 0 ? (
+            <div className="empty-inline" style={{ padding: '16px 12px', textAlign: 'center' }}>
+              {showUnusedOnly
+                ? (unused.loading ? 'Analyzing project...' : 'No potentially unused classes found.')
+                : filterQuery ? 'No classes match this filter.' : 'No classes were found in this project.'}
+            </div>
           ) : (
-            groupedFilteredSymbols.length === 0 ? (
-              <p style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '24px' }}>No classes match.</p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {groupedFilteredSymbols.map(group => (
-                  <div key={group.file}>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600, wordBreak: 'break-all' }}>
-                      {group.file}
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      {group.classes.map(cls => (
-                        <div
-                          key={cls.id}
-                          onClick={() => setSelectedClass(cls)}
-                          style={{
-                            padding: '8px 12px',
-                            backgroundColor: selectedClass?.id === cls.id ? 'var(--primary-color)' : 'var(--bg-color)',
-                            border: '1px solid',
-                            borderColor: selectedClass?.id === cls.id ? 'var(--primary-color)' : 'var(--border-color)',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            color: selectedClass?.id === cls.id ? '#fff' : 'var(--text-main)',
-                            transition: 'background-color 0.1s'
-                          }}
-                        >
-                          <div style={{ fontWeight: 600, fontSize: '0.95rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {cls.name}
-                          </div>
-                          <div style={{ fontSize: '0.75rem', marginTop: '4px', opacity: 0.8, display: 'flex', justifyContent: 'space-between' }}>
-                            <span>class</span>
-                            <span>Line {cls.start_line}</span>
-                          </div>
-                          {cls.parent_id && (
-                            <div style={{ fontSize: '0.7rem', marginTop: '4px', opacity: 0.7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              Context: {cls.parent_id.split('::').pop()}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+            groupedFilteredSymbols.map(group => (
+              <div key={group.file}>
+                <div className="list-group-label"><Icon name="file" size={11} /> {group.file}</div>
+                {group.classes.map(cls => {
+                  const isSelected = selectedClass?.id === cls.id;
+                  return (
+                    <button
+                      key={cls.id}
+                      type="button"
+                      className={`list-item${isSelected ? ' is-selected' : ''}`}
+                      onClick={() => setSelectedClass(cls)}
+                      aria-current={isSelected ? 'true' : undefined}
+                    >
+                      <span className="list-item-title">
+                        <Icon name="class" size={13} style={{ color: 'var(--cs-cyan)', flexShrink: 0 }} />
+                        <span className="mono truncate">{cls.name}</span>
+                        {unused.findings?.has(cls.deterministic_id) && <span style={{ marginLeft: 'auto' }}><UnusedBadge /></span>}
+                      </span>
+                      <span className="list-item-meta">
+                        <span>class</span>
+                        {cls.parent_id && <span className="truncate">in {cls.parent_id.split('::').pop()}</span>}
+                        <span style={{ marginLeft: 'auto', flexShrink: 0 }}>L{cls.start_line}</span>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-            )
+            ))
           )}
         </div>
-      </div>
+      </aside>
 
       {/* Column 3: Details & Source */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: 'var(--bg-color)' }}>
+      <section className="explorer-main" aria-label="Class details">
         {!selectedClass ? (
-           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-             Select a class to view details
-           </div>
+          <EmptyState icon="class" title="Select a class">
+            Choose a class to see its methods, base classes and source, where it is referenced or
+            subclassed, and what a change to it may affect.
+          </EmptyState>
         ) : (
-           <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-             
-             {/* Metadata Header */}
-             <div style={{ 
-               padding: '16px 24px', 
-               borderBottom: '1px solid var(--border-color)', 
-               backgroundColor: 'var(--surface-color)',
-               flexShrink: 0
-             }}>
-               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                 <div>
-                   <h2 style={{ margin: '0 0 8px 0', fontSize: '1.4rem' }}>{selectedClass.name}</h2>
-                   <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{selectedClass.deterministic_id}</div>
-                 </div>
-                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                   {selectedClass.file_id && (
-                     <button 
-                       onClick={() => onNavigateToFile(selectedClass.file_id, selectedClass.start_line, selectedClass.end_line)}
-                       style={{ 
-                         padding: '4px 12px', 
-                         backgroundColor: 'transparent', 
-                         border: '1px solid var(--primary-color)', 
-                         color: 'var(--primary-color)', 
-                         borderRadius: '16px', 
-                         fontSize: '0.85rem', 
-                         fontWeight: 600,
-                         cursor: 'pointer'
-                       }}>
-                       Open in File Explorer
-                     </button>
-                   )}
-                   <div style={{ padding: '4px 12px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '16px', fontSize: '0.85rem', fontWeight: 600 }}>
-                     class
-                   </div>
-                 </div>
-               </div>
+          <>
+            {/* Metadata Header */}
+            <div className="detail-header">
+              <div className="detail-title-row">
+                <div style={{ minWidth: 0 }}>
+                  <div className="detail-title">
+                    <Icon name="class" size={16} style={{ color: 'var(--cs-cyan)', flexShrink: 0 }} />
+                    <span className="truncate">{selectedClass.name}</span>
+                    <span className="badge" style={{ fontFamily: 'var(--cs-font-sans)' }}>class</span>
+                  </div>
+                  <div className="detail-id">{selectedClass.deterministic_id}</div>
+                </div>
+                {selectedClass.file_id && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => handleOpenLocation(selectedClass.file_id, selectedClass.start_line, selectedClass.end_line, fileMap[selectedClass.file_id]?.relative_path)}
+                    title="Open this definition in the File Explorer"
+                  >
+                    <Icon name="arrowUpRight" size={13} /> Open in editor
+                  </button>
+                )}
+              </div>
 
-               <div style={{ display: 'flex', gap: '24px', fontSize: '0.9rem', color: 'var(--text-main)', flexWrap: 'wrap' }}>
-                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                   <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase' }}>File</span>
-                   <span>{fileMap[selectedClass.file_id]?.relative_path || 'Unknown'}</span>
-                 </div>
-                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                   <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Lines</span>
-                   <span>{selectedClass.start_line} - {selectedClass.end_line}</span>
-                 </div>
-                 {selectedClass.parent_id && (
-                   <div style={{ display: 'flex', flexDirection: 'column' }}>
-                     <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Context</span>
-                     <span>{selectedClass.parent_id.split('::').pop()}</span>
-                   </div>
-                 )}
-                 {/* Inheritance from details payload if available */}
-                 {classDetails && (
-                   <div style={{ display: 'flex', flexDirection: 'column' }}>
-                     <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Inheritance</span>
-                     <span style={{ color: 'var(--primary-color)' }}>
-                       {classDetails.bases && classDetails.bases.length > 0 
-                          ? classDetails.bases.join(', ') 
-                          : 'No base classes'}
-                     </span>
-                   </div>
-                 )}
-               </div>
-             </div>
+              <div className="meta-grid">
+                <div className="meta-item">
+                  <span>File</span>
+                  <span>{fileMap[selectedClass.file_id]?.relative_path || 'Unknown'}</span>
+                </div>
+                <div className="meta-item">
+                  <span>Lines</span>
+                  <span>{selectedClass.start_line} – {selectedClass.end_line}</span>
+                </div>
+                {selectedClass.parent_id && (
+                  <div className="meta-item">
+                    <span>Context</span>
+                    <span>{selectedClass.parent_id.split('::').pop()}</span>
+                  </div>
+                )}
+                {/* Inheritance from details payload if available */}
+                {classDetails && (
+                  <div className="meta-item">
+                    <span>Inherits from</span>
+                    <span style={{ color: classDetails.bases?.length ? 'var(--cs-accent)' : 'var(--cs-text-subtle)' }}>
+                      {classDetails.bases && classDetails.bases.length > 0
+                         ? classDetails.bases.join(', ')
+                         : 'No base classes'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
 
-             <div style={{ flex: 1, overflow: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <DetailTabs tabs={DETAIL_TABS} active={detailTab} onChange={setDetailTab} />
+
+            {detailTab !== 'overview' ? (
+              <SymbolInsights
+                key={`${selectedClass.deterministic_id}:${detailTab}`}
+                projectId={overview.id}
+                symbolId={selectedClass.deterministic_id}
+                view={detailTab}
+                onOpenLocation={handleOpenLocation}
+                onSelectSymbol={handleSelectRelated}
+              />
+            ) : (
+              <div className="detail-body">
                 {loadingDetails ? (
-                  <p style={{ color: 'var(--text-muted)' }}>Loading details...</p>
+                  <LoadingState>Loading details...</LoadingState>
                 ) : (
                   <>
                     {/* Docstring */}
                     {classDetails?.docstring && (
                       <div>
-                        <h4 style={{ margin: '0 0 8px 0', color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: '0.8rem' }}>Docstring</h4>
-                        <div style={{ 
-                          padding: '12px 16px', 
-                          backgroundColor: 'rgba(59, 130, 246, 0.1)', 
-                          borderLeft: '4px solid var(--primary-color)',
-                          color: '#e2e8f0',
-                          whiteSpace: 'pre-wrap',
-                          fontSize: '0.95rem'
-                        }}>
+                        <h3 className="section-title" style={{ marginBottom: '8px' }}>Docstring</h3>
+                        <div style={{ padding: '10px 14px', borderLeft: '2px solid var(--cs-accent)', background: 'var(--cs-bg-2)', borderRadius: '0 var(--cs-radius) var(--cs-radius) 0', color: 'var(--cs-text)', whiteSpace: 'pre-wrap', fontSize: 'var(--cs-text-sm)', lineHeight: 1.6 }}>
                           {classDetails.docstring}
                         </div>
                       </div>
                     )}
 
                     {/* Class Methods */}
-                    {selectedClassMethods.length > 0 && (
-                      <div>
-                        <h4 style={{ margin: '0 0 8px 0', color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: '0.8rem' }}>Methods</h4>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div>
+                      <h3 className="section-title" style={{ marginBottom: '8px' }}>
+                        Methods <span className="count">{selectedClassMethods.length}</span>
+                      </h3>
+                      {selectedClassMethods.length === 0 ? (
+                        <div className="empty-inline">This class defines no methods.</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           {selectedClassMethods.map(method => (
-                            <div key={method.id} style={{ 
-                              padding: '12px', 
-                              backgroundColor: 'var(--surface-color)', 
-                              border: '1px solid var(--border-color)',
-                              borderRadius: '6px',
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center'
-                            }}>
-                              <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-main)' }}>
-                                {method.name}
-                              </div>
-                              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                                Line {method.start_line} - {method.end_line}
-                              </div>
-                            </div>
+                            <button
+                              key={method.id}
+                              type="button"
+                              className="result-row"
+                              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '7px 12px' }}
+                              onClick={() => handleOpenLocation(method.file_id, method.start_line, method.end_line, fileMap[method.file_id]?.relative_path)}
+                              title="Open this method in the File Explorer"
+                            >
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                                <Icon name="method" size={13} style={{ color: 'var(--cs-accent)', flexShrink: 0 }} />
+                                <span className="mono truncate" style={{ fontSize: 'var(--cs-text-sm)' }}>{method.name}</span>
+                              </span>
+                              <span className="result-row-location">L{method.start_line}–{method.end_line}</span>
+                            </button>
                           ))}
                         </div>
-                      </div>
-                    )}
+                      )}
+                    </div>
 
                     {/* Source Snippet */}
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                      <h4 style={{ margin: '0 0 8px 0', color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: '0.8rem' }}>Source Code</h4>
-                      <div style={{ flex: 1, backgroundColor: '#1e1e1e', padding: '16px', borderRadius: '6px', overflow: 'auto' }}>
-                        {sourceSnippet ? (
-                          <pre style={{ margin: 0, width: 'fit-content', minWidth: '100%' }}>
-                            <code style={{ 
-                              fontFamily: 'monospace', 
-                              fontSize: '0.95rem', 
-                              color: 'var(--text-main)', 
-                              whiteSpace: 'pre'
-                            }}>
-                              {sourceSnippet.split('\n').map((line, idx) => {
-                                const lineNum = typeof selectedClass.start_line === 'number' 
-                                  ? Math.max(1, selectedClass.start_line) + idx 
-                                  : '';
-                                return (
-                                  <div key={idx} style={{ display: 'flex' }}>
-                                    <span style={{ 
-                                      display: 'inline-block', 
-                                      width: '40px', 
-                                      minWidth: '40px', 
-                                      textAlign: 'right', 
-                                      paddingRight: '12px', 
-                                      color: 'var(--text-muted)', 
-                                      userSelect: 'none',
-                                      opacity: 0.5,
-                                      flexShrink: 0
-                                    }}>
-                                      {lineNum}
-                                    </span>
-                                    <span style={{ flexShrink: 0 }}>{line === '' ? '\n' : line}</span>
-                                  </div>
-                                );
-                              })}
-                            </code>
-                          </pre>
-                        ) : (
-                          <p style={{ color: 'var(--text-muted)', fontStyle: 'italic', margin: 0 }}>Snippet not available.</p>
-                        )}
-                      </div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                      <h3 className="section-title" style={{ marginBottom: '8px' }}>Source</h3>
+                      {sourceSnippet ? (
+                        <div className="code-block" style={{ flex: 1 }}>
+                          {sourceSnippet.split('\n').map((line, idx) => {
+                            const lineNum = typeof selectedClass.start_line === 'number'
+                              ? Math.max(1, selectedClass.start_line) + idx
+                              : '';
+                            return (
+                              <div key={idx} className="code-line">
+                                <span className="code-line-number">{lineNum}</span>
+                                <span className="code-line-text">{line === '' ? ' ' : line}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="empty-inline">Source snippet not available.</div>
+                      )}
                     </div>
                   </>
                 )}
-             </div>
-           </div>
+              </div>
+            )}
+          </>
         )}
-      </div>
+      </section>
     </div>
   );
 }

@@ -1,5 +1,19 @@
 import React, { useState } from 'react';
+import Icon from './ui/Icon';
+import { PageHeader, Banner, EmptyState, LoadingState } from './ui/ui';
 import '../index.css';
+
+const TYPE_ICONS = {
+  file: 'file',
+  class: 'class',
+  method: 'method',
+  async_method: 'method',
+};
+
+function resultIcon(res) {
+  if (res.type === 'file') return 'file';
+  return TYPE_ICONS[res.symbol_type] || 'function';
+}
 
 function Search({ overview, onNavigateToSymbol, onNavigateToFile }) {
   const [query, setQuery] = useState('');
@@ -7,6 +21,7 @@ function Search({ overview, onNavigateToSymbol, onNavigateToFile }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [hasSearched, setHasSearched] = useState(false);
+  const [searchedQuery, setSearchedQuery] = useState('');
 
   const handleSearch = async (e) => {
     e?.preventDefault();
@@ -27,6 +42,7 @@ function Search({ overview, onNavigateToSymbol, onNavigateToFile }) {
       const data = await res.json();
       setResults(data);
       setHasSearched(true);
+      setSearchedQuery(query);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -34,114 +50,108 @@ function Search({ overview, onNavigateToSymbol, onNavigateToFile }) {
     }
   };
 
+  const openResult = (res) => {
+    if (res.type === 'symbol' && onNavigateToSymbol) {
+      onNavigateToSymbol(res.id, res.symbol_type);
+    } else if (res.type === 'file' && onNavigateToFile) {
+      const match = res.id.match(/^file_(\d+)$/);
+      if (match) {
+        const fileIdNum = parseInt(match[1], 10);
+        onNavigateToFile(fileIdNum, null, null, res.relative_path);
+      }
+    }
+  };
+
   return (
-    <div className="workspace-view">
-      <div style={{ marginBottom: '24px' }}>
-        <h2 style={{ fontSize: '1.8rem', fontWeight: 700, marginBottom: '16px' }}>Global Search</h2>
-        
-        <form onSubmit={handleSearch} style={{ display: 'flex', gap: '12px', maxWidth: '800px', flexDirection: 'row' }}>
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search symbols, files, imports..."
-            style={{ 
-              flex: 1, 
-              padding: '12px 16px', 
-              borderRadius: '6px', 
-              border: '1px solid var(--border-color)', 
-              backgroundColor: 'var(--surface-color)', 
-              color: 'var(--text-main)',
-              fontSize: '1rem'
-            }}
-            disabled={loading}
-          />
-          <button type="submit" className="btn-primary" disabled={loading} style={{ margin: 0, padding: '0 24px' }}>
-            {loading ? "Searching..." : "Search"}
+    <div className="page">
+      <div className="page-inner" style={{ maxWidth: '980px' }}>
+        <PageHeader
+          title="Search"
+          description="Weighted search across symbol names, file paths, imports, docstrings and source code."
+        />
+
+        <form onSubmit={handleSearch} style={{ display: 'flex', gap: '8px' }} role="search">
+          <div className="input-with-icon" style={{ flex: 1 }}>
+            <Icon name="search" size={15} />
+            <input
+              type="search"
+              className="input input-lg"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search functions, classes, files, imports..."
+              aria-label="Search query"
+              disabled={loading}
+              autoFocus
+            />
+          </div>
+          <button type="submit" className="btn-primary btn-lg" disabled={loading || !query.trim()}>
+            {loading ? <span className="spinner" style={{ borderTopColor: '#fff' }} /> : 'Search'}
           </button>
         </form>
-      </div>
 
-      {error && (
-        <div className="alert error" style={{ marginBottom: '16px', maxWidth: '800px' }}>
-          <p><strong>Error:</strong> {error}</p>
-        </div>
-      )}
+        {error && (
+          <Banner type="error" boxed title="Search failed.">{error}</Banner>
+        )}
 
-      {hasSearched && !loading && !error && (
-        <div style={{ maxWidth: '1000px' }}>
-          <h3 style={{ marginBottom: '16px', color: 'var(--text-muted)', fontSize: '1rem', fontWeight: '500' }}>
-            {results.length} result(s) found
-          </h3>
-          
-          {results.length === 0 ? (
-             <div style={{ padding: '24px', backgroundColor: 'var(--surface-color)', borderRadius: '8px', color: 'var(--text-muted)', textAlign: 'center' }}>
-               No results found for "{query}"
-             </div>
-          ) : (
-             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-               {results.map((res, index) => (
-                 <div 
-                   key={res.id + index} 
-                   onClick={() => {
-                     if (res.type === 'symbol' && onNavigateToSymbol) {
-                       onNavigateToSymbol(res.id, res.symbol_type);
-                     } else if (res.type === 'file' && onNavigateToFile) {
-                       const match = res.id.match(/^file_(\d+)$/);
-                       if (match) {
-                         const fileIdNum = parseInt(match[1], 10);
-                         onNavigateToFile(fileIdNum, null, null);
-                       }
-                     }
-                   }}
-                   onMouseEnter={(e) => {
-                     e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
-                   }}
-                   onMouseLeave={(e) => {
-                     e.currentTarget.style.backgroundColor = 'var(--surface-color)';
-                   }}
-                   style={{ 
-                     padding: '16px', 
-                     backgroundColor: 'var(--surface-color)',
-                     border: '1px solid var(--border-color)',
-                     borderLeft: '4px solid var(--primary-color)',
-                     borderRadius: '6px',
-                     display: 'flex',
-                     justifyContent: 'space-between',
-                     cursor: 'pointer',
-                     transition: 'background-color 0.1s',
-                   }}>
-                    <div style={{ flex: 1, minWidth: 0, paddingRight: '16px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-                        <span style={{ fontSize: '1.1rem', fontWeight: '600', color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{res.name}</span>
-                        <span style={{ fontSize: '0.75rem', padding: '2px 8px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '12px', color: 'var(--text-muted)' }}>
-                          {res.type === 'file' ? 'File' : res.symbol_type}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                        <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{res.relative_path}</div>
-                        {res.type === 'symbol' && (
-                          <div style={{ marginTop: '2px' }}>Lines: {res.start_line} - {res.end_line}</div>
-                        )}
-                      </div>
-                      
+        {loading && <LoadingState>Searching...</LoadingState>}
+
+        {!hasSearched && !loading && !error && (
+          <EmptyState icon="search" title="Search the indexed project">
+            Results are ranked by relevance: exact symbol names score highest, followed by partial
+            matches, paths, imports, docstrings and source text. Select a result to open it.
+          </EmptyState>
+        )}
+
+        {hasSearched && !loading && !error && (
+          <section aria-live="polite">
+            <h2 className="section-title" style={{ marginBottom: '10px' }}>
+              Results <span className="count">{results.length}</span>
+            </h2>
+
+            {results.length === 0 ? (
+              <EmptyState icon="search" title={`No results for "${searchedQuery}"`}>
+                Try a shorter or different term, part of a function or class name, or a file path.
+              </EmptyState>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {results.map((res, index) => (
+                  <button
+                    type="button"
+                    key={res.id + index}
+                    className="result-row"
+                    onClick={() => openResult(res)}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: '12px', padding: '10px 14px' }}
+                  >
+                    <span className="dropzone-icon" style={{ width: '30px', height: '30px', color: res.type === 'file' ? 'var(--cs-cyan)' : 'var(--cs-accent)' }}>
+                      <Icon name={resultIcon(res)} size={15} />
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                        <span className="mono truncate" style={{ fontWeight: 500, fontSize: 'var(--cs-text-sm)' }}>{res.name}</span>
+                        <span className="badge">{res.type === 'file' ? 'file' : res.symbol_type?.replace('_', ' ')}</span>
+                      </span>
+                      <span className="result-row-location truncate">
+                        {res.relative_path}{res.type === 'symbol' && res.start_line ? `:${res.start_line}` : ''}
+                      </span>
                       {res.reasons && res.reasons.length > 0 && (
-                        <div style={{ marginTop: '12px', fontSize: '0.8rem', color: 'var(--primary-color)' }}>
-                          Matches: {res.reasons.join(', ')}
-                        </div>
+                        <span style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '2px' }}>
+                          {res.reasons.map(reason => (
+                            <span key={reason} className="badge badge-plain" style={{ color: 'var(--cs-text-subtle)' }}>{reason}</span>
+                          ))}
+                        </span>
                       )}
-                    </div>
-                    
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', justifyContent: 'center' }}>
-                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-main)' }}>{res.score}</div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Score</div>
-                    </div>
-                 </div>
-               ))}
-             </div>
-          )}
-        </div>
-      )}
+                    </span>
+                    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0 }} title="Relevance score">
+                      <span style={{ fontSize: 'var(--cs-text-md)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{res.score}</span>
+                      <span className="subtle" style={{ fontSize: 'var(--cs-text-2xs)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>score</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </div>
     </div>
   );
 }

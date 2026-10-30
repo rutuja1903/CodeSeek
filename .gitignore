@@ -5,3 +5,4 @@ __pycache__/
 
 backend/uploads/
 backend/codeseek.db
+backend/version_history/

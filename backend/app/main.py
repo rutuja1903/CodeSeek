@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 from app.database.core import get_connection
 from app.services.indexer import index_project
 from app.services.search import search_project
+from app.services import history
+from app.services import analysis
 from app.services.graphs import (
     build_file_dependency_graph, 
     build_call_graph, 
@@ -550,11 +552,19 @@ def save_project_file(project_id: int, req: SaveFileRequest):
     finally:
         conn.close()
 
+    # 1. Preserve the current on-disk bytes as a version so this save can be undone.
+    #    Without a backup the file is not overwritten.
+    try:
+        backup = _snapshot_current_file(project_id, file_record["relative_path"], target_path, reason="save")
+    except Exception as e:
+        logger.error("Version snapshot failed before saving %s: %s", target_path, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create a backup version; the file was not saved")
+
     target_dir = os.path.dirname(target_path)
     filename = os.path.basename(target_path)
     temp_path = os.path.join(target_dir, f".{filename}.{uuid.uuid4().hex}.tmp")
 
-    # 1. Atomic file write to disk
+    # 2. Atomic file write to disk
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(req.source)
@@ -572,8 +582,40 @@ def save_project_file(project_id: int, req: SaveFileRequest):
             except OSError:
                 pass
 
-    # 2. Re-indexing
+    # 3. Re-indexing
     clean_rel = req.relative_path.strip().replace("\\", "/")
+    return _reindex_after_write(
+        project,
+        project_id,
+        clean_rel,
+        messages={
+            "reindex_failed": "Source file saved successfully to disk, but re-indexing failed. The AST, symbols, and dependency graphs may be stale until re-indexed.",
+            "reindex_missing_file": "Source file saved successfully to disk, but was not found in the project index after re-indexing.",
+            "success": "File saved and project re-indexed successfully.",
+        },
+        extra={"backup_version_id": backup["version_id"] if backup else None},
+    )
+
+
+def _snapshot_current_file(project_id: int, relative_path: str, target_path: str, reason: str):
+    """
+    Store the file's current on-disk bytes as a history version (exact bytes).
+    Returns the version metadata, or None if the file does not exist on disk.
+    """
+    if not os.path.isfile(target_path):
+        return None
+    with open(target_path, "rb") as f:
+        data = f.read()
+    return history.create_snapshot(project_id, relative_path, data, reason=reason)
+
+
+def _reindex_after_write(project: dict, project_id: int, clean_rel: str, messages: dict, extra: Optional[dict] = None):
+    """
+    Re-index the project after a successful disk write and build the response:
+    HTTP 200 on success, HTTP 207 when the file is on disk but the index could not be
+    refreshed (reindex_failed) or the file row is missing afterwards (reindex_missing_file).
+    """
+    extra = extra or {}
     try:
         index_project(
             project_name=project["name"],
@@ -581,14 +623,14 @@ def save_project_file(project_id: int, req: SaveFileRequest):
             update_project_id=project_id
         )
     except Exception as e:
-        logger.error("Re-indexing failed after saving file %s in project %d: %s", clean_rel, project_id, e, exc_info=True)
+        logger.error("Re-indexing failed after writing file %s in project %d: %s", clean_rel, project_id, e, exc_info=True)
         return JSONResponse(
             status_code=207,
             content={
                 "saved": True,
                 "reindexed": False,
                 "status": "reindex_failed",
-                "message": "Source file saved successfully to disk, but re-indexing failed. The AST, symbols, and dependency graphs may be stale until re-indexed.",
+                "message": messages["reindex_failed"],
                 "error_type": type(e).__name__,
                 "detail": "Parser or indexing error occurred during AST metadata extraction.",
                 "project_id": project_id,
@@ -597,11 +639,12 @@ def save_project_file(project_id: int, req: SaveFileRequest):
                     "action_required": "manual_reindex_or_resave",
                     "stale_entities": ["symbols", "calls", "dependencies", "file_ids"],
                     "file_persisted_on_disk": True
-                }
+                },
+                **extra,
             }
         )
 
-    # 3. Retrieve new file_id after re-indexing
+    # Retrieve new file_id after re-indexing
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -621,14 +664,15 @@ def save_project_file(project_id: int, req: SaveFileRequest):
                 "saved": True,
                 "reindexed": False,
                 "status": "reindex_missing_file",
-                "message": "Source file saved successfully to disk, but was not found in the project index after re-indexing.",
+                "message": messages["reindex_missing_file"],
                 "project_id": project_id,
                 "relative_path": clean_rel,
                 "new_file_id": None,
                 "recovery": {
                     "action_required": "manual_reindex",
                     "file_persisted_on_disk": True
-                }
+                },
+                **extra,
             }
         )
 
@@ -636,11 +680,188 @@ def save_project_file(project_id: int, req: SaveFileRequest):
         "saved": True,
         "reindexed": True,
         "status": "success",
-        "message": "File saved and project re-indexed successfully.",
+        "message": messages["success"],
         "project_id": project_id,
         "relative_path": clean_rel,
-        "new_file_id": new_file_id
+        "new_file_id": new_file_id,
+        **extra,
     }
+
+
+# ---------------------------------------------------------
+# Milestone 4: File Version History
+# ---------------------------------------------------------
+
+class RestoreVersionRequest(BaseModel):
+    relative_path: str
+
+
+def _resolve_history_target(project_id: int, relative_path: str):
+    """
+    Reuse the editor's project/path validation for history access.
+    Returns (project, canonical_relative_path, target_path).
+    """
+    conn = get_connection()
+    try:
+        project, file_record, target_path = _resolve_and_validate_project_file(conn, project_id, relative_path)
+    finally:
+        conn.close()
+    return project, file_record["relative_path"], target_path
+
+
+def _load_version_or_error(project_id: int, relative_path: str, version_id: str):
+    try:
+        return history.get_version(project_id, relative_path, version_id)
+    except history.InvalidVersionId:
+        raise HTTPException(status_code=400, detail="Invalid version id")
+    except history.VersionNotFound:
+        raise HTTPException(status_code=404, detail="Version not found for this file")
+    except history.SnapshotCorrupted:
+        raise HTTPException(status_code=409, detail="Version data failed its integrity check and cannot be used")
+
+
+@app.get("/projects/{project_id}/files/versions")
+def list_file_versions(project_id: int, relative_path: str = Query(..., description="Relative path of file within the project")):
+    """
+    List saved versions of a project file, newest first.
+    """
+    _, rel, _ = _resolve_history_target(project_id, relative_path)
+    return {
+        "project_id": project_id,
+        "relative_path": rel,
+        "max_versions": history.MAX_VERSIONS_PER_FILE,
+        "versions": history.list_versions(project_id, rel),
+    }
+
+
+@app.get("/projects/{project_id}/files/versions/{version_id}")
+def get_file_version(project_id: int, version_id: str, relative_path: str = Query(..., description="Relative path of file within the project")):
+    """
+    Get one version's metadata and source for preview. The preview text is decoded for
+    display; restoring always writes the snapshot's exact bytes.
+    """
+    _, rel, _ = _resolve_history_target(project_id, relative_path)
+    meta, data = _load_version_or_error(project_id, rel, version_id)
+    return {**meta, **history.decode_for_display(data)}
+
+
+@app.post("/projects/{project_id}/files/versions/{version_id}/restore")
+def restore_file_version(project_id: int, version_id: str, req: RestoreVersionRequest):
+    """
+    Restore a saved version: back up the current file as a new version (so the restore
+    can be undone), atomically write the snapshot's exact bytes, then re-index.
+    Uses the same HTTP 200 / 207 contract as saving.
+    """
+    project, rel, target_path = _resolve_history_target(project_id, req.relative_path)
+    _, data = _load_version_or_error(project_id, rel, version_id)
+
+    try:
+        backup = _snapshot_current_file(project_id, rel, target_path, reason="restore")
+    except Exception as e:
+        logger.error("Version snapshot failed before restoring %s: %s", target_path, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to back up the current file; nothing was restored")
+
+    try:
+        history.atomic_write_bytes(target_path, data)
+    except Exception as e:
+        logger.error("Disk write failed while restoring %s: %s", target_path, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to write the restored version to disk; the current file is unchanged")
+
+    return _reindex_after_write(
+        project,
+        project_id,
+        rel,
+        messages={
+            "reindex_failed": "Version restored successfully to disk, but re-indexing failed. The AST, symbols, and dependency graphs may be stale until re-indexed.",
+            "reindex_missing_file": "Version restored successfully to disk, but the file was not found in the project index after re-indexing.",
+            "success": "Version restored and project re-indexed successfully.",
+        },
+        extra={
+            "restored_version_id": version_id,
+            "backup_version_id": backup["version_id"] if backup else None,
+        },
+    )
+
+
+# ---------------------------------------------------------
+# Milestone 5: Code Intelligence & Impact Analysis
+# ---------------------------------------------------------
+# Static analysis over the existing index; project code is never executed.
+# Symbols are addressed by deterministic_id (stable across re-indexing) via a
+# query parameter, because the ids contain '/' and '::'.
+
+_SYMBOL_NOT_FOUND = "Symbol not found in this project. It may have been renamed or removed since the last index."
+
+
+def _load_project_index(project_id: int) -> "analysis.ProjectIndex":
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM projects WHERE id = ?", (project_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Project not found")
+    finally:
+        conn.close()
+    return analysis.ProjectIndex(project_id)
+
+
+@app.get("/projects/{project_id}/analysis/references")
+def get_symbol_references(project_id: int, symbol_id: str = Query(..., min_length=1, description="Deterministic symbol id")):
+    """
+    Call, instantiation, import and subclass references to a function or class.
+    """
+    index = _load_project_index(project_id)
+    try:
+        return analysis.find_references(index, symbol_id)
+    except analysis.SymbolNotFound:
+        raise HTTPException(status_code=404, detail=_SYMBOL_NOT_FOUND)
+
+
+@app.get("/projects/{project_id}/analysis/call-hierarchy")
+def get_call_hierarchy(project_id: int, symbol_id: str = Query(..., min_length=1, description="Deterministic symbol id")):
+    """
+    Incoming and outgoing calls for a function or method.
+    """
+    index = _load_project_index(project_id)
+    try:
+        return analysis.call_hierarchy(index, symbol_id)
+    except analysis.SymbolNotFound:
+        raise HTTPException(status_code=404, detail=_SYMBOL_NOT_FOUND)
+    except analysis.NotAFunction:
+        raise HTTPException(status_code=400, detail="Call hierarchy is only available for functions and methods")
+
+
+@app.get("/projects/{project_id}/analysis/impact")
+def get_symbol_impact(project_id: int, symbol_id: str = Query(..., min_length=1, description="Deterministic symbol id")):
+    """
+    Direct change impact of a function or class: references, callers, related symbols and files.
+    """
+    index = _load_project_index(project_id)
+    try:
+        return analysis.symbol_impact(index, symbol_id)
+    except analysis.SymbolNotFound:
+        raise HTTPException(status_code=404, detail=_SYMBOL_NOT_FOUND)
+
+
+@app.get("/projects/{project_id}/analysis/file-impact")
+def get_file_impact(project_id: int, relative_path: str = Query(..., min_length=1, description="Relative path of file within the project")):
+    """
+    Direct change impact of a file: files it imports, files importing it, and cross-file calls.
+    """
+    index = _load_project_index(project_id)
+    try:
+        return analysis.file_impact(index, relative_path)
+    except analysis.FileNotIndexed:
+        raise HTTPException(status_code=404, detail="File not found in this project's index")
+
+
+@app.get("/projects/{project_id}/analysis/unused")
+def get_potentially_unused(project_id: int):
+    """
+    Functions and classes with no visible use in the project (potentially unused).
+    """
+    index = _load_project_index(project_id)
+    return analysis.potentially_unused(index)
 
 
 

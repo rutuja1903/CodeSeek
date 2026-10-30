@@ -7,7 +7,19 @@ import ClassExplorer from './components/ClassExplorer';
 import DependencyGraphs from './components/DependencyGraphs';
 import Statistics from './components/Statistics';
 import AppShell from './components/AppShell';
+import Icon, { BrandMark } from './components/ui/Icon';
+import { ConfirmDialog } from './components/ui/ui';
 import './index.css';
+
+const PAGE_LABELS = {
+  dashboard: 'Dashboard',
+  search: 'Search',
+  files: 'File Explorer',
+  functions: 'Functions',
+  classes: 'Classes',
+  graphs: 'Dependency Graphs',
+  statistics: 'Statistics',
+};
 
 function App() {
   const [activeTab, setActiveTab] = useState(null); // null means home
@@ -46,8 +58,9 @@ function App() {
     setPendingTab(null);
   };
 
-  const handleNavigateToFile = (fileId, startLine, endLine) => {
-    setFileNavTarget({ fileId, startLine, endLine });
+  // relativePath is optional; File Explorer falls back to it when fileId is stale after re-indexing
+  const handleNavigateToFile = (fileId, startLine, endLine, relativePath) => {
+    setFileNavTarget({ fileId, startLine, endLine, relativePath });
     setActiveTab('files');
   };
 
@@ -133,7 +146,7 @@ function App() {
           onUpdateOverview={setOverview}
           isEditorDirty={isEditorDirty}
         >
-          {activeTab === 'dashboard' && <Dashboard overview={overview} />}
+          {activeTab === 'dashboard' && <Dashboard overview={overview} onNavigate={handleTabNavigate} onNavigateToFile={handleNavigateToFile} />}
           {activeTab === 'search' && <Search overview={overview} onNavigateToSymbol={handleNavigateToSymbol} onNavigateToFile={handleNavigateToFile} />}
           {activeTab === 'files' && (
             <FileExplorer 
@@ -151,157 +164,94 @@ function App() {
         </AppShell>
 
         {/* Tab Switch Discard Confirmation Modal */}
-        {showTabDiscardModal && (
-          <div style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.65)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1000,
-          }}>
-            <div style={{
-              backgroundColor: 'var(--surface-color)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '8px',
-              padding: '24px',
-              maxWidth: '460px',
-              width: '90%',
-              boxShadow: '0 10px 25px rgba(0, 0, 0, 0.5)',
-            }}>
-              <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', color: 'var(--text-main)' }}>
-                Unsaved Changes
-              </h3>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '20px', lineHeight: 1.5 }}>
-                You have unsaved changes in the editor. Navigating to the <strong style={{ color: 'var(--text-main)' }}>{pendingTab}</strong> tab will discard your changes. Do you want to continue?
-              </p>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-                <button
-                  type="button"
-                  onClick={handleCancelTabDiscard}
-                  style={{
-                    padding: '8px 16px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--border-color)',
-                    backgroundColor: 'transparent',
-                    color: 'var(--text-main)',
-                    cursor: 'pointer',
-                    fontSize: '0.85rem',
-                  }}
-                >
-                  Keep Editing
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmTabDiscard}
-                  style={{
-                    padding: '8px 16px',
-                    borderRadius: '6px',
-                    border: 'none',
-                    backgroundColor: '#ef4444',
-                    color: '#ffffff',
-                    cursor: 'pointer',
-                    fontWeight: '600',
-                    fontSize: '0.85rem',
-                  }}
-                >
-                  Discard &amp; Switch
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        <ConfirmDialog
+          open={showTabDiscardModal}
+          title="Discard unsaved changes?"
+          tone="danger"
+          confirmLabel="Discard & switch"
+          cancelLabel="Keep editing"
+          onConfirm={handleConfirmTabDiscard}
+          onCancel={handleCancelTabDiscard}
+        >
+          The editor has unsaved changes. Opening <strong>{PAGE_LABELS[pendingTab] || pendingTab}</strong> will discard them.
+        </ConfirmDialog>
       </>
     );
   }
 
   // Home / upload screen
   return (
-    <div className="home-container">
-      <header className="header">
-        <h1>CodeSeek</h1>
-        <p className="subtitle">Explore and understand Python codebases</p>
-      </header>
+    <div className="home">
+      <div className="home-inner">
+        <header className="home-brand">
+          <BrandMark />
+          <div>
+            <h1 className="home-title">CodeSeek</h1>
+            <p className="home-subtitle">Explore, navigate and safely edit Python codebases</p>
+          </div>
+        </header>
 
-      <main className="main-content">
-        <div className="card form-card">
-          <h2>Analyze Project</h2>
+        <main className="home-card">
           <form onSubmit={handleAnalyze}>
             {/* Project name */}
-            <div className="form-group">
-              <label htmlFor="name">Project Name</label>
+            <div className="field">
+              <label htmlFor="name" className="field-label">Project name</label>
               <input
                 type="text"
                 id="name"
+                className="input input-lg"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g., sample_shop"
+                placeholder="e.g. sample_shop"
                 disabled={loading}
+                autoComplete="off"
               />
             </div>
 
             {/* ZIP file chooser */}
-            <div className="form-group">
-              <label htmlFor="zipFile">Repository ZIP</label>
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '8px',
-                }}
+            <div className="field">
+              <label htmlFor="zipFile" className="field-label">Repository archive</label>
+              <input
+                ref={fileInputRef}
+                type="file"
+                id="zipFile"
+                accept=".zip"
+                onChange={handleFileChange}
+                disabled={loading}
+                style={{ display: 'none' }}
+              />
+              <button
+                type="button"
+                className={`dropzone${selectedFile ? ' has-file' : ''}`}
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading}
               >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  id="zipFile"
-                  accept=".zip"
-                  onChange={handleFileChange}
-                  disabled={loading}
-                  style={{ display: 'none' }}
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={loading}
-                  style={{
-                    padding: '10px 16px',
-                    borderRadius: '6px',
-                    border: '1px dashed var(--border-color)',
-                    backgroundColor: 'var(--bg-color)',
-                    color: 'var(--text-muted)',
-                    cursor: loading ? 'not-allowed' : 'pointer',
-                    fontSize: '0.9rem',
-                    textAlign: 'left',
-                  }}
-                >
-                  {selectedFile
-                    ? `\u2713 ${selectedFile.name} (${(selectedFile.size / 1024).toFixed(1)} KB)`
-                    : 'Choose .zip file\u2026'}
-                </button>
-                {selectedFile && (
-                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                    Selected: {selectedFile.name}
+                <span className="dropzone-icon">
+                  <Icon name={selectedFile ? 'archive' : 'upload'} size={17} />
+                </span>
+                <span style={{ minWidth: 0 }}>
+                  <span className="truncate" style={{ display: 'block', fontSize: 'var(--cs-text-sm)', fontWeight: 500 }}>
+                    {selectedFile ? selectedFile.name : 'Choose a .zip file'}
                   </span>
-                )}
-              </div>
+                  <span style={{ display: 'block', fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-subtle)' }}>
+                    {selectedFile ? `${(selectedFile.size / 1024).toFixed(1)} KB · click to change` : 'A zipped Python project, extracted and indexed locally'}
+                  </span>
+                </span>
+              </button>
             </div>
 
-            <button type="submit" disabled={loading || !selectedFile} className="btn-primary">
-              {loading ? 'Uploading & Analyzing\u2026' : 'Analyze Project'}
+            {error && (
+              <div className="alert error" role="alert">{error}</div>
+            )}
+
+            <button type="submit" disabled={loading || !selectedFile} className="btn-primary btn-lg">
+              {loading ? <><span className="spinner" style={{ borderTopColor: '#fff' }} /> Uploading &amp; analyzing…</> : 'Analyze project'}
             </button>
           </form>
-        </div>
+        </main>
 
-        {error && (
-          <div className="alert error">
-            <p><strong>Error:</strong> {error}</p>
-          </div>
-        )}
-      </main>
+        <p className="home-footnote">Code is parsed statically with Python's AST. Nothing in the project is executed.</p>
+      </div>
     </div>
   );
 }
