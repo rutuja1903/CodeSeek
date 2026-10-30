@@ -11,10 +11,15 @@ import uuid
 import zipfile
 import shutil
 import tempfile
+import ast
+import logging
 from fastapi import FastAPI, HTTPException, Path, Query, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from app.database.core import get_connection
 from app.services.indexer import index_project
@@ -386,3 +391,260 @@ def get_project_stats(project_id: int):
         "file_dependencies": calculate_graph_metrics(file_G),
         "function_calls": calculate_graph_metrics(call_G)
     }
+
+
+# ---------------------------------------------------------
+# Phase 3: Code Editor Endpoints & Helpers
+# ---------------------------------------------------------
+
+class ValidateSourceRequest(BaseModel):
+    source: str
+    relative_path: Optional[str] = None
+
+
+class SaveFileRequest(BaseModel):
+    relative_path: str
+    source: str
+
+
+def _resolve_and_validate_project_file(conn, project_id: int, relative_path: str):
+    """
+    Validates that:
+    1. The project exists in the database.
+    2. relative_path is a relative path (rejects absolute paths, drive letters, UNC paths).
+    3. The file exists in the 'files' table for this project_id and ends with '.py'.
+    4. The canonical target path is strictly contained within the canonical project root.
+    5. Symlinks cannot escape the project root directory.
+
+    Returns:
+        tuple[dict, dict, str]: (project_dict, file_dict, canonical_target_path)
+    """
+    if not relative_path or not isinstance(relative_path, str):
+        raise HTTPException(status_code=400, detail="relative_path must be a non-empty string")
+
+    clean_rel = relative_path.strip()
+    # Reject absolute paths, UNC paths, and Windows drive specifications
+    if os.path.isabs(clean_rel) or clean_rel.startswith(("\\", "/")) or (len(clean_rel) > 1 and clean_rel[1] == ":"):
+        raise HTTPException(status_code=400, detail="Invalid path: Absolute paths are not permitted")
+
+    # Only Python files can be edited/saved
+    if not clean_rel.lower().endswith(".py"):
+        raise HTTPException(status_code=400, detail="Only Python source files (.py) are supported")
+
+    # Verify project exists
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, root_path FROM projects WHERE id = ?", (project_id,))
+    project_row = cursor.fetchone()
+    if not project_row:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project = dict(project_row)
+
+    # Standardize separator for DB matching
+    db_relative_path = clean_rel.replace("\\", "/")
+
+    # Verify file is indexed in database
+    cursor.execute(
+        "SELECT id, project_id, relative_path, language, line_count, source, parse_status, parse_error FROM files WHERE project_id = ? AND relative_path = ?",
+        (project_id, db_relative_path)
+    )
+    file_row = cursor.fetchone()
+    if not file_row:
+        raise HTTPException(status_code=404, detail=f"File '{db_relative_path}' not found in project")
+    file_record = dict(file_row)
+
+    # Canonical path containment check on Windows and POSIX
+    root_dir = project["root_path"]
+    canonical_root = os.path.realpath(os.path.abspath(root_dir))
+    target_path = os.path.realpath(os.path.abspath(os.path.join(canonical_root, clean_rel)))
+
+    norm_root = os.path.normcase(canonical_root)
+    norm_target = os.path.normcase(target_path)
+
+    try:
+        common = os.path.commonpath([norm_root, norm_target])
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied: Path is on a different drive volume")
+
+    if common != norm_root or norm_target == norm_root:
+        raise HTTPException(status_code=403, detail="Access denied: Path traverses outside project root")
+
+    return project, file_record, target_path
+
+
+@app.post("/projects/{project_id}/files/validate")
+def validate_project_file_source(project_id: int, req: ValidateSourceRequest):
+    """
+    Validates Python source code syntax using ast.parse without executing code.
+    Confirms project_id exists.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM projects WHERE id = ?", (project_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Project not found")
+    finally:
+        conn.close()
+
+    filename = req.relative_path or "<editor>"
+    try:
+        ast.parse(req.source, filename=filename)
+        return {"valid": True, "errors": []}
+    except SyntaxError as e:
+        error_info = {
+            "line": e.lineno,
+            "column": e.offset,
+            "end_line": getattr(e, "end_lineno", None),
+            "end_column": getattr(e, "end_offset", None),
+            "message": e.msg,
+            "text": e.text.strip() if e.text else None
+        }
+        return {"valid": False, "errors": [error_info]}
+    except Exception:
+        return {"valid": False, "errors": [{"line": None, "column": None, "message": "Failed to parse syntax", "text": None}]}
+
+
+@app.get("/projects/{project_id}/files/by-path")
+def get_file_by_relative_path(project_id: int, relative_path: str = Query(..., description="Relative path of file within the project")):
+    """
+    Get file metadata, source, and attached symbols for a specific relative path within a project.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM projects WHERE id = ?", (project_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        db_path = relative_path.strip().replace("\\", "/")
+        cursor.execute(
+            "SELECT id, project_id, relative_path, language, line_count, source, parse_status, parse_error FROM files WHERE project_id = ? AND relative_path = ?",
+            (project_id, db_path)
+        )
+        file_row = cursor.fetchone()
+        if not file_row:
+            raise HTTPException(status_code=404, detail=f"File '{db_path}' not found in project")
+
+        file_data = dict(file_row)
+
+        cursor.execute(
+            "SELECT id, deterministic_id, file_id, name, symbol_type, start_line, end_line, parent_id FROM symbols WHERE file_id = ?",
+            (file_data["id"],)
+        )
+        file_data["symbols"] = [dict(s) for s in cursor.fetchall()]
+
+        return file_data
+    finally:
+        conn.close()
+
+
+@app.post("/projects/{project_id}/files/save")
+def save_project_file(project_id: int, req: SaveFileRequest):
+    """
+    Safely writes user source code atomically to disk and re-indexes the project.
+    If re-indexing fails, returns HTTP 207 Multi-Status with detailed machine-readable diagnostic info.
+    """
+    conn = get_connection()
+    try:
+        project, file_record, target_path = _resolve_and_validate_project_file(conn, project_id, req.relative_path)
+    finally:
+        conn.close()
+
+    target_dir = os.path.dirname(target_path)
+    filename = os.path.basename(target_path)
+    temp_path = os.path.join(target_dir, f".{filename}.{uuid.uuid4().hex}.tmp")
+
+    # 1. Atomic file write to disk
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(req.source)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(temp_path, target_path)
+    except Exception as e:
+        logger.error("Disk write failed for %s: %s", target_path, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save file to disk")
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+    # 2. Re-indexing
+    clean_rel = req.relative_path.strip().replace("\\", "/")
+    try:
+        index_project(
+            project_name=project["name"],
+            root_dir=project["root_path"],
+            update_project_id=project_id
+        )
+    except Exception as e:
+        logger.error("Re-indexing failed after saving file %s in project %d: %s", clean_rel, project_id, e, exc_info=True)
+        return JSONResponse(
+            status_code=207,
+            content={
+                "saved": True,
+                "reindexed": False,
+                "status": "reindex_failed",
+                "message": "Source file saved successfully to disk, but re-indexing failed. The AST, symbols, and dependency graphs may be stale until re-indexed.",
+                "error_type": type(e).__name__,
+                "detail": "Parser or indexing error occurred during AST metadata extraction.",
+                "project_id": project_id,
+                "relative_path": clean_rel,
+                "recovery": {
+                    "action_required": "manual_reindex_or_resave",
+                    "stale_entities": ["symbols", "calls", "dependencies", "file_ids"],
+                    "file_persisted_on_disk": True
+                }
+            }
+        )
+
+    # 3. Retrieve new file_id after re-indexing
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id FROM files WHERE project_id = ? AND relative_path = ?",
+            (project_id, clean_rel)
+        )
+        new_row = cursor.fetchone()
+        new_file_id = new_row["id"] if new_row else None
+    finally:
+        conn.close()
+
+    if not new_file_id:
+        return JSONResponse(
+            status_code=207,
+            content={
+                "saved": True,
+                "reindexed": False,
+                "status": "reindex_missing_file",
+                "message": "Source file saved successfully to disk, but was not found in the project index after re-indexing.",
+                "project_id": project_id,
+                "relative_path": clean_rel,
+                "new_file_id": None,
+                "recovery": {
+                    "action_required": "manual_reindex",
+                    "file_persisted_on_disk": True
+                }
+            }
+        )
+
+    return {
+        "saved": True,
+        "reindexed": True,
+        "status": "success",
+        "message": "File saved and project re-indexed successfully.",
+        "project_id": project_id,
+        "relative_path": clean_rel,
+        "new_file_id": new_file_id
+    }
+
+
+
+if __name__ == "__main__":
+    import uvicorn
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True, reload_dirs=[app_dir])

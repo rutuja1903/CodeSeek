@@ -13,12 +13,38 @@ function App() {
   const [activeTab, setActiveTab] = useState(null); // null means home
   const [fileNavTarget, setFileNavTarget] = useState(null);
   const [symbolNavTarget, setSymbolNavTarget] = useState(null);
+  const [isEditorDirty, setIsEditorDirty] = useState(false);
+  const [pendingTab, setPendingTab] = useState(null);
+  const [showTabDiscardModal, setShowTabDiscardModal] = useState(false);
   const [name, setName] = useState('');
   const [selectedFile, setSelectedFile] = useState(null); // File object from <input type="file">
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [overview, setOverview] = useState(null);
   const fileInputRef = useRef(null);
+
+  const handleTabNavigate = (targetTab) => {
+    if (activeTab === 'files' && isEditorDirty && targetTab !== 'files') {
+      setPendingTab(targetTab);
+      setShowTabDiscardModal(true);
+      return;
+    }
+    setActiveTab(targetTab);
+  };
+
+  const handleConfirmTabDiscard = () => {
+    setIsEditorDirty(false);
+    setShowTabDiscardModal(false);
+    if (pendingTab) {
+      setActiveTab(pendingTab);
+      setPendingTab(null);
+    }
+  };
+
+  const handleCancelTabDiscard = () => {
+    setShowTabDiscardModal(false);
+    setPendingTab(null);
+  };
 
   const handleNavigateToFile = (fileId, startLine, endLine) => {
     setFileNavTarget({ fileId, startLine, endLine });
@@ -28,9 +54,9 @@ function App() {
   const handleNavigateToSymbol = (symbolId, symbolType) => {
     setSymbolNavTarget(symbolId);
     if (symbolType === 'class') {
-      setActiveTab('classes');
+      handleTabNavigate('classes');
     } else {
-      setActiveTab('functions');
+      handleTabNavigate('functions');
     }
   };
 
@@ -99,15 +125,97 @@ function App() {
   // If we have a project loaded and an active tab, render the AppShell
   if (activeTab && overview) {
     return (
-      <AppShell overview={overview} activeTab={activeTab} onNavigate={setActiveTab} onUpdateOverview={setOverview}>
-        {activeTab === 'dashboard' && <Dashboard overview={overview} />}
-        {activeTab === 'search' && <Search overview={overview} onNavigateToSymbol={handleNavigateToSymbol} onNavigateToFile={handleNavigateToFile} />}
-        {activeTab === 'files' && <FileExplorer overview={overview} fileNavTarget={fileNavTarget} clearNavTarget={() => setFileNavTarget(null)} />}
-        {activeTab === 'functions' && <FunctionExplorer overview={overview} onNavigateToFile={handleNavigateToFile} symbolNavTarget={symbolNavTarget} clearSymbolNavTarget={() => setSymbolNavTarget(null)} />}
-        {activeTab === 'classes' && <ClassExplorer overview={overview} onNavigateToFile={handleNavigateToFile} symbolNavTarget={symbolNavTarget} clearSymbolNavTarget={() => setSymbolNavTarget(null)} />}
-        {activeTab === 'graphs' && <DependencyGraphs overview={overview} />}
-        {activeTab === 'statistics' && <Statistics overview={overview} />}
-      </AppShell>
+      <>
+        <AppShell 
+          overview={overview} 
+          activeTab={activeTab} 
+          onNavigate={handleTabNavigate} 
+          onUpdateOverview={setOverview}
+          isEditorDirty={isEditorDirty}
+        >
+          {activeTab === 'dashboard' && <Dashboard overview={overview} />}
+          {activeTab === 'search' && <Search overview={overview} onNavigateToSymbol={handleNavigateToSymbol} onNavigateToFile={handleNavigateToFile} />}
+          {activeTab === 'files' && (
+            <FileExplorer 
+              overview={overview} 
+              fileNavTarget={fileNavTarget} 
+              clearNavTarget={() => setFileNavTarget(null)}
+              onDirtyChange={setIsEditorDirty}
+              onUpdateOverview={setOverview}
+            />
+          )}
+          {activeTab === 'functions' && <FunctionExplorer overview={overview} onNavigateToFile={handleNavigateToFile} symbolNavTarget={symbolNavTarget} clearSymbolNavTarget={() => setSymbolNavTarget(null)} />}
+          {activeTab === 'classes' && <ClassExplorer overview={overview} onNavigateToFile={handleNavigateToFile} symbolNavTarget={symbolNavTarget} clearSymbolNavTarget={() => setSymbolNavTarget(null)} />}
+          {activeTab === 'graphs' && <DependencyGraphs overview={overview} />}
+          {activeTab === 'statistics' && <Statistics overview={overview} />}
+        </AppShell>
+
+        {/* Tab Switch Discard Confirmation Modal */}
+        {showTabDiscardModal && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.65)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}>
+            <div style={{
+              backgroundColor: 'var(--surface-color)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '8px',
+              padding: '24px',
+              maxWidth: '460px',
+              width: '90%',
+              boxShadow: '0 10px 25px rgba(0, 0, 0, 0.5)',
+            }}>
+              <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', color: 'var(--text-main)' }}>
+                Unsaved Changes
+              </h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '20px', lineHeight: 1.5 }}>
+                You have unsaved changes in the editor. Navigating to the <strong style={{ color: 'var(--text-main)' }}>{pendingTab}</strong> tab will discard your changes. Do you want to continue?
+              </p>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                <button
+                  type="button"
+                  onClick={handleCancelTabDiscard}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border-color)',
+                    backgroundColor: 'transparent',
+                    color: 'var(--text-main)',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  Keep Editing
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmTabDiscard}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    backgroundColor: '#ef4444',
+                    color: '#ffffff',
+                    cursor: 'pointer',
+                    fontWeight: '600',
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  Discard &amp; Switch
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
     );
   }
 

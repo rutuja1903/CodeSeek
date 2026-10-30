@@ -1,10 +1,20 @@
 import React, { useState, useRef } from 'react';
 import '../index.css';
 
-function AppShell({ overview, activeTab, onNavigate, onUpdateOverview, children }) {
+function AppShell({ overview, activeTab, onNavigate, onUpdateOverview, isEditorDirty, children }) {
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState(null);
   const fileInputRef = useRef(null);
+
+  const handleUpdateClick = () => {
+    if (isEditorDirty) {
+      const confirmed = window.confirm(
+        'You have unsaved edits in the editor. Updating the project with a new ZIP will overwrite the codebase and discard your unsaved changes. Do you want to continue?'
+      );
+      if (!confirmed) return;
+    }
+    fileInputRef.current?.click();
+  };
 
   const handleUpdate = async (e) => {
     const file = e.target.files?.[0];
@@ -116,7 +126,7 @@ function AppShell({ overview, activeTab, onNavigate, onUpdateOverview, children 
             className="btn-primary" 
             style={{ width: '100%', fontSize: '0.85rem' }}
             disabled={updating}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={handleUpdateClick}
           >
             {updating ? "Updating..." : "Update Project (ZIP)"}
           </button>
