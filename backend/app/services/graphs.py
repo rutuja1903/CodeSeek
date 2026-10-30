@@ -8,6 +8,44 @@ Converts indexed CodeSeek data into NetworkX graphs for:
 import networkx as nx
 from app.database.core import get_connection
 
+# Symbol types that take part in the call graph
+FUNCTION_TYPES = ('function', 'async_function', 'method', 'async_method', 'nested_function')
+
+
+def path_to_module(rel_path: str) -> str:
+    """
+    Convert a project-relative file path to its dotted module name.
+    e.g. services/auth.py -> services.auth, models/__init__.py -> models
+    """
+    mod = rel_path
+    if mod.endswith(".py"):
+        mod = mod[:-3]
+    if mod.endswith("/__init__"):
+        mod = mod[:-9]
+    elif mod == "__init__":
+        mod = ""
+    return mod.replace("/", ".")
+
+
+def resolve_import_target(module_part, name_part, module_to_file: dict):
+    """
+    Resolve an import row to a project file path, or None if it is external/unresolved.
+    "import name_part" -> the module file; "from module_part import name_part" ->
+    module_part.name_part if that is a module, else module_part.
+    """
+    if module_part is None:
+        return module_to_file.get(name_part)
+    combined = f"{module_part}.{name_part}"
+    if combined in module_to_file:
+        return module_to_file[combined]
+    return module_to_file.get(module_part)
+
+
+def callee_short_name(raw_callee: str) -> str:
+    """Last segment of a raw callee name: "auth.login_user" -> "login_user"."""
+    return raw_callee.split(".")[-1]
+
+
 def build_file_dependency_graph(project_id: int, db_path: str = "codeseek.db"):
     """
     Builds a directed graph of file dependencies (internal imports).
@@ -40,20 +78,7 @@ def build_file_dependency_graph(project_id: int, db_path: str = "codeseek.db"):
                    
         id_to_path[file_id] = rel_path
         
-        # Convert path to module name
-        # e.g., services/auth.py -> services.auth
-        # e.g., models/__init__.py -> models
-        
-        mod = rel_path
-        if mod.endswith(".py"):
-            mod = mod[:-3]
-        if mod.endswith("/__init__"):
-            mod = mod[:-9]
-        elif mod == "__init__":
-            mod = ""
-            
-        mod = mod.replace("/", ".")
-        module_to_file[mod] = rel_path
+        module_to_file[path_to_module(rel_path)] = rel_path
         
     # 2. Fetch imports and resolve edges
     cursor.execute("SELECT file_id, module, imported_name FROM imports WHERE project_id = ?", (project_id,))
@@ -68,21 +93,9 @@ def build_file_dependency_graph(project_id: int, db_path: str = "codeseek.db"):
             
         module_part = imp["module"]
         name_part = imp["imported_name"]
-        
-        target_path = None
-        
-        if module_part is None:
-            # "import name_part"
-            target_path = module_to_file.get(name_part)
-        else:
-            # "from module_part import name_part"
-            # It could be `module_part.name_part` is a file
-            combined = f"{module_part}.{name_part}"
-            if combined in module_to_file:
-                target_path = module_to_file[combined]
-            elif module_part in module_to_file:
-                target_path = module_to_file[module_part]
-                
+
+        target_path = resolve_import_target(module_part, name_part, module_to_file)
+
         if target_path:
             G.add_edge(src_path, target_path, type="imports")
         else:
@@ -113,8 +126,8 @@ def build_call_graph(project_id: int, db_path: str = "codeseek.db"):
     cursor.execute('''
         SELECT deterministic_id, name, symbol_type, file_id 
         FROM symbols 
-        WHERE project_id = ? AND symbol_type IN ('function', 'async_function', 'method', 'async_method', 'nested_function')
-    ''', (project_id,))
+        WHERE project_id = ? AND symbol_type IN ({})
+    '''.format(", ".join("?" * len(FUNCTION_TYPES))), (project_id, *FUNCTION_TYPES))
     
     symbols = cursor.fetchall()
     symbol_names_map = {} # Maps short name to list of IDs (for resolution)
@@ -155,7 +168,7 @@ def build_call_graph(project_id: int, db_path: str = "codeseek.db"):
         # If callee is dotted (e.g. "auth.login_user"), take the last part ("login_user")
         # and see if it uniquely matches.
         
-        callee_short = callee.split(".")[-1]
+        callee_short = callee_short_name(callee)
         
         candidates = symbol_names_map.get(callee_short, [])
         if len(candidates) == 1:

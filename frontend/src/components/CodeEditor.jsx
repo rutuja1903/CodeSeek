@@ -9,12 +9,33 @@ import React, { useRef, useEffect } from 'react';
  * - Ctrl+S / Cmd+S save shortcut (preventing browser save dialog)
  * - Selected line range highlighting and smooth auto-scrolling
  * - Usable rendering for empty files, blank lines, and trailing newlines
+ * - Optional unsaved-change markers in the gutter (lineMarkers from utils/lineDiff)
  */
+
+const MARKER_COLORS = {
+  add: 'var(--cs-diff-add)',
+  modify: 'var(--cs-diff-modify)',
+  delete: 'var(--cs-diff-remove)',
+};
+
+// Small right-pointing triangle straddling a line boundary
+const deletedWedgeStyle = {
+  position: 'absolute',
+  left: '-3px',
+  width: 0,
+  height: 0,
+  borderTop: '5px solid transparent',
+  borderBottom: '5px solid transparent',
+  borderLeft: `7px solid ${MARKER_COLORS.delete}`,
+  zIndex: 1,
+};
+
 export default function CodeEditor({
   value,
   onChange,
   onSave,
   highlightRange,
+  lineMarkers = null,
   readOnly = false,
   placeholder = 'Enter Python code here...',
 }) {
@@ -140,7 +161,7 @@ export default function CodeEditor({
         position: 'relative',
         overflow: 'hidden',
         backgroundColor: 'var(--bg-color)',
-        fontFamily: 'Consolas, Monaco, "Courier New", Courier, monospace',
+        fontFamily: 'var(--cs-font-mono)',
         fontSize: '0.95rem',
         lineHeight: '1.5rem',
       }}
@@ -154,7 +175,7 @@ export default function CodeEditor({
           minWidth: '56px',
           height: '100%',
           overflow: 'hidden',
-          backgroundColor: 'rgba(0, 0, 0, 0.25)',
+          backgroundColor: 'var(--cs-bg-1)',
           borderRight: '1px solid var(--border-color)',
           userSelect: 'none',
           padding: '16px 0',
@@ -167,23 +188,37 @@ export default function CodeEditor({
         {Array.from({ length: lineCount }).map((_, idx) => {
           const lineNum = idx + 1;
           const isHighlighted = highlightRange && lineNum >= highlightRange.start && lineNum <= highlightRange.end;
+          const marker = lineMarkers?.lines.get(lineNum);
+          // Deleted lines are shown as a wedge on the boundary after the preceding line
+          const deletedBefore = lineNum === 1 ? lineMarkers?.deletedAfter.get(0) : undefined;
+          const deletedAfter = lineMarkers?.deletedAfter.get(lineNum);
+          const deletedTitle = (count) => `${count} line${count === 1 ? '' : 's'} deleted`;
           return (
             <div
               key={lineNum}
+              title={marker === 'add' ? 'Added line' : marker === 'modify' ? 'Modified line' : undefined}
               style={{
+                position: 'relative',
                 height: '1.5rem',
                 lineHeight: '1.5rem',
                 paddingRight: '12px',
                 fontSize: '0.85rem',
                 fontWeight: isHighlighted ? 'bold' : 'normal',
                 color: isHighlighted ? 'var(--primary-color)' : 'var(--text-muted)',
-                backgroundColor: isHighlighted ? 'rgba(59, 130, 246, 0.25)' : 'transparent',
+                backgroundColor: isHighlighted ? 'var(--cs-accent-soft)' : 'transparent',
+                borderLeft: `3px solid ${marker ? MARKER_COLORS[marker] : 'transparent'}`,
                 borderRight: isHighlighted ? '2px solid var(--primary-color)' : '2px solid transparent',
                 boxSizing: 'border-box',
-                opacity: isHighlighted ? 1 : 0.6,
+                opacity: isHighlighted || marker ? 1 : 0.55,
               }}
             >
               {lineNum}
+              {deletedBefore && (
+                <span title={deletedTitle(deletedBefore)} style={{ ...deletedWedgeStyle, top: '-5px' }} />
+              )}
+              {deletedAfter && (
+                <span title={deletedTitle(deletedAfter)} style={{ ...deletedWedgeStyle, bottom: '-5px' }} />
+              )}
             </div>
           );
         })}
@@ -226,7 +261,7 @@ export default function CodeEditor({
                   lineHeight: '1.5rem',
                   width: '100%',
                   minWidth: '100%',
-                  backgroundColor: isHighlighted ? 'rgba(59, 130, 246, 0.18)' : 'transparent',
+                  backgroundColor: isHighlighted ? 'rgba(91, 155, 255, 0.09)' : 'transparent',
                   borderLeft: isHighlighted ? '3px solid var(--primary-color)' : '3px solid transparent',
                   boxSizing: 'border-box',
                 }}
@@ -263,7 +298,8 @@ export default function CodeEditor({
             overflow: 'auto',
             background: 'transparent',
             color: 'var(--text-main)',
-            fontFamily: 'Consolas, Monaco, "Courier New", Courier, monospace',
+            caretColor: 'var(--cs-accent)',
+            fontFamily: 'var(--cs-font-mono)',
             fontSize: '0.95rem',
             lineHeight: '1.5rem',
             tabSize: 4,

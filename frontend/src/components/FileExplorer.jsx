@@ -1,50 +1,61 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useDeferredValue, useRef } from 'react';
 import CodeEditor from './CodeEditor';
+import DiffView from './DiffView';
+import HistoryView from './HistoryView';
+import { FileImpactView } from './CodeInsights';
+import Icon from './ui/Icon';
+import { Banner, ConfirmDialog, EmptyState, LoadingState } from './ui/ui';
+import { diffLines, lineMarkers, revertHunk } from '../utils/lineDiff';
 import '../index.css';
 
-const TreeNode = ({ node, onSelect, selectedId }) => {
+// Indentation for a tree row at a given depth
+const treeIndent = (depth) => ({ paddingLeft: `${8 + depth * 14}px` });
+
+const TreeNode = ({ node, onSelect, selectedId, depth = 0 }) => {
   const [expanded, setExpanded] = useState(true);
-  
+  const isRoot = node.name === 'root';
+  const childDepth = isRoot ? depth : depth + 1;
+
   return (
-    <div style={{ paddingLeft: node.name === 'root' ? '0' : '1.2rem' }}>
-      {node.name !== 'root' && (
-        <div 
-          onClick={() => setExpanded(!expanded)} 
-          style={{ cursor: 'pointer', fontWeight: 'bold', color: '#ccc', padding: '4px 0', userSelect: 'none' }}
+    <div>
+      {!isRoot && (
+        <button
+          type="button"
+          className="tree-row is-folder"
+          style={treeIndent(depth)}
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
         >
-          {expanded ? '📂' : '📁'} {node.name}
-        </div>
+          <Icon name="chevronRight" size={12} className={`chevron${expanded ? ' open' : ''}`} />
+          <Icon name={expanded ? 'folderOpen' : 'folder'} size={14} className="folder-icon" />
+          <span className="truncate">{node.name}</span>
+        </button>
       )}
       {expanded && (
         <div>
           {Object.values(node.children).map(child => (
-            <TreeNode key={child.name} node={child} onSelect={onSelect} selectedId={selectedId} />
+            <TreeNode key={child.name} node={child} onSelect={onSelect} selectedId={selectedId} depth={childDepth} />
           ))}
-          {node.files.map(file => (
-            <div 
-              key={file.id} 
-              onClick={() => onSelect(file)}
-              style={{ 
-                cursor: 'pointer', 
-                padding: '4px 8px', 
-                color: file.parse_status ? '#ddd' : 'var(--error-text)',
-                backgroundColor: selectedId === file.id ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
-                borderRadius: '4px',
-                userSelect: 'none',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis'
-              }}
-              title={file.relative_path.split('/').pop()}
-            >
-              <span style={{ fontSize: '0.9rem' }}>📄</span> 
-              <span>{file.relative_path.split('/').pop()}</span>
-              {!file.parse_status && <span style={{ color: 'var(--error-text)', fontSize: '0.8rem' }}>⚠️</span>}
-            </div>
-          ))}
+          {node.files.map(file => {
+            const fileName = file.relative_path.split('/').pop();
+            const isSelected = selectedId === file.id;
+            return (
+              <button
+                key={file.id}
+                type="button"
+                onClick={() => onSelect(file)}
+                className={`tree-row${isSelected ? ' is-selected' : ''}${!file.parse_status ? ' has-error' : ''}`}
+                style={treeIndent(childDepth)}
+                aria-current={isSelected ? 'true' : undefined}
+                title={file.parse_status ? file.relative_path : `${file.relative_path} (failed to parse)`}
+              >
+                <span style={{ width: '12px', flexShrink: 0 }} />
+                <Icon name="file" size={14} className="file-icon" />
+                <span className="truncate">{fileName}</span>
+                {!file.parse_status && <Icon name="alertCircle" size={12} style={{ marginLeft: 'auto', flexShrink: 0 }} />}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -77,9 +88,32 @@ function FileExplorer({
   // Discard guard modal states
   const [showDiscardModal, setShowDiscardModal] = useState(false);
   const [pendingFileSwitch, setPendingFileSwitch] = useState(null);
+  const [pendingHighlight, setPendingHighlight] = useState(null);
+
+  // Editor, unsaved-changes (diff) or version history view
+  const [viewMode, setViewMode] = useState('editor');
+
+  // Version history: restore in flight, and a counter that reloads the version list
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+
+  // Set to the new file id after a successful save, so the details reload for that id
+  // keeps the editor buffer (including anything typed while the save was in flight)
+  const skipDetailsReloadRef = useRef(null);
 
   // Derived dirty state
   const isDirty = Boolean(selectedFile && editorSource !== savedSource);
+
+  // Diff against the last saved source. Deferred so typing stays responsive on large files.
+  const deferredSource = useDeferredValue(editorSource);
+  const diff = useMemo(
+    () => (deferredSource !== savedSource ? diffLines(savedSource, deferredSource) : null),
+    [savedSource, deferredSource]
+  );
+  const activeDiff = isDirty ? diff : null;
+  const markers = useMemo(() => (activeDiff ? lineMarkers(activeDiff.hunks) : null), [activeDiff]);
+  // The Changes view only makes sense while there are unsaved edits
+  const effectiveView = viewMode === 'changes' && !isDirty ? 'editor' : viewMode;
 
   // Sync dirty state upwards to parent (App.jsx)
   useEffect(() => {
@@ -125,7 +159,8 @@ function FileExplorer({
   // Consume navigation target from Search / Functions / Classes
   useEffect(() => {
     if (fileNavTarget && files.length > 0) {
-      const targetFile = files.find(f => f.id === fileNavTarget.fileId);
+      const targetFile = files.find(f => f.id === fileNavTarget.fileId)
+        || (fileNavTarget.relativePath && files.find(f => f.relative_path === fileNavTarget.relativePath));
       if (targetFile) {
         if (isDirty && selectedFile && selectedFile.id !== targetFile.id) {
           setPendingFileSwitch(targetFile);
@@ -152,6 +187,13 @@ function FileExplorer({
   useEffect(() => {
     if (!selectedFile) return;
 
+    // The id changed only because the project was re-indexed after our own save:
+    // the DB copy equals what we just saved, so keep the current buffer and banner.
+    if (skipDetailsReloadRef.current === selectedFile.id) {
+      skipDetailsReloadRef.current = null;
+      return;
+    }
+
     let isMounted = true;
     const fetchDetails = async () => {
       try {
@@ -165,6 +207,7 @@ function FileExplorer({
           setSavedSource(src);
           setSaveBanner(null);
           setValidationResult(null);
+          setViewMode('editor');
         }
       } catch (err) {
         console.error("Error fetching file details:", err);
@@ -215,28 +258,47 @@ function FileExplorer({
     return () => clearTimeout(timer);
   }, [editorSource, selectedFile, overview.id]);
 
-  // File selection with unsaved changes guard
-  const handleSelectFile = (file) => {
+  // File selection with unsaved changes guard; range optionally highlights lines in the new file
+  const handleSelectFile = (file, range = null) => {
     if (selectedFile && file.id === selectedFile.id) return;
+    // Switching mid-save or mid-restore would let the response apply to the wrong file
+    if (isSaving || isRestoring) return;
 
     if (isDirty) {
       setPendingFileSwitch(file);
+      setPendingHighlight(range);
       setShowDiscardModal(true);
     } else {
       setSelectedFile(file);
-      setHighlightRange(null);
+      setHighlightRange(range);
       setSaveBanner(null);
     }
   };
 
-  // Discard confirmation
+  // Open a file/line from the Impact view, honouring the unsaved-changes guard
+  const handleOpenLocation = (relativePath, line) => {
+    const target = files.find(f => f.relative_path === relativePath);
+    if (!target) return;
+    const range = line ? { start: line, end: line } : null;
+    if (selectedFile && target.id === selectedFile.id) {
+      setViewMode('editor');
+      setHighlightRange(range);
+      return;
+    }
+    handleSelectFile(target, range);
+  };
+
+  // Discard confirmation (file switch, or Discard All when no switch is pending)
   const handleConfirmDiscard = () => {
     setEditorSource(savedSource);
     setShowDiscardModal(false);
+    setSaveBanner(null);
+    setViewMode('editor');
     if (pendingFileSwitch) {
       setSelectedFile(pendingFileSwitch);
       setPendingFileSwitch(null);
-      setHighlightRange(null);
+      setHighlightRange(pendingHighlight);
+      setPendingHighlight(null);
       setSaveBanner(null);
     }
   };
@@ -244,20 +306,143 @@ function FileExplorer({
   const handleCancelDiscard = () => {
     setShowDiscardModal(false);
     setPendingFileSwitch(null);
+    setPendingHighlight(null);
   };
 
-  // Manual Discard/Revert button
+  // Discard All button: confirm before reverting the whole buffer to the last saved source
   const handleManualDiscard = () => {
-    setEditorSource(savedSource);
+    if (!isDirty) return;
+    setPendingFileSwitch(null);
+    setShowDiscardModal(true);
+  };
+
+  // Revert a single hunk in the editor buffer (nothing is written to disk until Save)
+  const handleRevertHunk = (hunk) => {
+    const next = revertHunk(editorSource, hunk);
+    if (next !== null) {
+      setEditorSource(next);
+    }
+  };
+
+  // Jump from the Changes view to the hunk in the editor
+  const handleJumpToHunk = (hunk) => {
+    const start = hunk.newLines.length ? hunk.newStart : Math.max(1, hunk.newStart - 1);
+    const end = hunk.newLines.length ? hunk.newStart + hunk.newLines.length - 1 : start;
+    setViewMode('editor');
+    setHighlightRange({ start, end });
+  };
+
+  // After a write that re-indexed the project: refresh the file list, follow the file's
+  // new id without reloading the buffer we already hold, and refresh overview counts
+  const refreshAfterReindex = async (newFileId) => {
+    const freshFiles = await fetchFiles();
+    if (newFileId) {
+      if (newFileId !== selectedFile.id) {
+        skipDetailsReloadRef.current = newFileId;
+      }
+      const freshSelected = freshFiles.find(f => f.id === newFileId);
+      if (freshSelected) {
+        setSelectedFile(freshSelected);
+      } else {
+        setSelectedFile(prev => ({ ...prev, id: newFileId }));
+      }
+    }
+
+    // Refresh overview counts across application
+    try {
+      const ovRes = await fetch(`http://127.0.0.1:8000/projects/${overview.id}`);
+      if (ovRes.ok) {
+        const freshOverview = await ovRes.json();
+        if (onUpdateOverview) {
+          onUpdateOverview(freshOverview);
+        }
+      }
+    } catch (ovErr) {
+      console.error("Failed to refresh overview:", ovErr);
+    }
+  };
+
+  // Restore a saved version. HistoryView only offers this when the editor has no unsaved
+  // edits; the guard is repeated here so edits can never be discarded silently.
+  const handleRestoreVersion = async (version) => {
+    if (!selectedFile || isDirty || isSaving || isRestoring) return;
+
+    setIsRestoring(true);
     setSaveBanner(null);
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000/projects/${overview.id}/files/versions/${encodeURIComponent(version.version_id)}/restore`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ relative_path: selectedFile.relative_path }),
+        }
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (response.status === 200) {
+        // Take the new baseline from the fresh index so it matches what the backend holds
+        let restoredSource = version.source;
+        if (data.new_file_id) {
+          try {
+            const fileRes = await fetch(`http://127.0.0.1:8000/files/${data.new_file_id}`);
+            if (fileRes.ok) {
+              restoredSource = (await fileRes.json()).source || '';
+            }
+          } catch (fileErr) {
+            console.error("Failed to reload restored file:", fileErr);
+          }
+        }
+        setEditorSource(restoredSource);
+        setSavedSource(restoredSource);
+        setSaveBanner({
+          type: 'success',
+          message: data.message || 'Version restored and project re-indexed successfully.',
+          detail: 'The previous content was kept in History, so this restore can be undone.',
+        });
+        setViewMode('editor');
+        await refreshAfterReindex(data.new_file_id);
+
+      } else if (response.status === 207) {
+        // Restored on disk, but the index is stale: the restored content is the new baseline
+        setEditorSource(version.source);
+        setSavedSource(version.source);
+        setSaveBanner({
+          type: 'warning',
+          message: data.message || 'Version restored to disk, but re-indexing failed.',
+          detail: data.detail || (data.status === 'reindex_missing_file' ? 'File record could not be confirmed in the index.' : 'AST/graphs may be stale until re-indexed.'),
+        });
+        setViewMode('editor');
+
+      } else {
+        setSaveBanner({
+          type: 'error',
+          message: data.detail || `Restore failed (HTTP ${response.status})`,
+        });
+      }
+    } catch (err) {
+      setSaveBanner({
+        type: 'error',
+        message: `Network error: ${err.message || 'Could not connect to backend'}. The file was not restored.`,
+      });
+    } finally {
+      // A backup snapshot may exist even when the restore itself failed
+      setHistoryRefreshKey(k => k + 1);
+      setIsRestoring(false);
+    }
   };
 
   // Save handler
   const handleSave = async () => {
-    if (!selectedFile || isSaving) return;
+    if (!selectedFile || isSaving || isRestoring) return;
 
     setIsSaving(true);
     setSaveBanner(null);
+
+    // The exact content sent becomes the new baseline; edits typed during the save stay as a diff
+    const sourceToSave = editorSource;
 
     try {
       const response = await fetch(`http://127.0.0.1:8000/projects/${overview.id}/files/save`, {
@@ -265,7 +450,7 @@ function FileExplorer({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           relative_path: selectedFile.relative_path,
-          source: editorSource,
+          source: sourceToSave,
         }),
       });
 
@@ -273,39 +458,19 @@ function FileExplorer({
 
       if (response.status === 200) {
         // Full Success: persisted on disk and project re-indexed
-        setSavedSource(editorSource);
+        setSavedSource(sourceToSave);
         setSaveBanner({
           type: 'success',
           message: data.message || 'File saved and project re-indexed successfully.',
         });
 
-        // Refresh file list and update selectedFile with fresh new_file_id
-        const freshFiles = await fetchFiles();
-        if (data.new_file_id) {
-          const freshSelected = freshFiles.find(f => f.id === data.new_file_id);
-          if (freshSelected) {
-            setSelectedFile(freshSelected);
-          } else {
-            setSelectedFile(prev => ({ ...prev, id: data.new_file_id }));
-          }
-        }
-
-        // Refresh overview counts across application
-        try {
-          const ovRes = await fetch(`http://127.0.0.1:8000/projects/${overview.id}`);
-          if (ovRes.ok) {
-            const freshOverview = await ovRes.json();
-            if (onUpdateOverview) {
-              onUpdateOverview(freshOverview);
-            }
-          }
-        } catch (ovErr) {
-          console.error("Failed to refresh overview:", ovErr);
-        }
+        setHistoryRefreshKey(k => k + 1);
+        await refreshAfterReindex(data.new_file_id);
 
       } else if (response.status === 207) {
         // HTTP 207 Multi-Status Partial Success: File written to disk, but re-indexing or lookup failed
-        setSavedSource(editorSource); // The file was written to disk! Baseline is updated.
+        setSavedSource(sourceToSave); // The file was written to disk! Baseline is updated.
+        setHistoryRefreshKey(k => k + 1);
         setSaveBanner({
           type: 'warning',
           message: data.message || 'File saved to disk, but re-indexing failed.',
@@ -345,291 +510,253 @@ function FileExplorer({
     current.files.push(file);
   });
 
+  const VIEW_MODES = [
+    { mode: 'editor', label: 'Editor', icon: 'code', tooltip: 'Edit source' },
+    { mode: 'changes', label: 'Changes', icon: 'diff', tooltip: 'Compare unsaved changes with the last save' },
+    { mode: 'history', label: 'History', icon: 'history', tooltip: 'Saved versions of this file' },
+    { mode: 'impact', label: 'Impact', icon: 'impact', tooltip: 'Imports and cross-file calls' },
+  ];
+
+  const pathParts = selectedFile ? selectedFile.relative_path.split('/') : [];
+  const fileName = pathParts[pathParts.length - 1];
+  const syntaxError = validationResult && !validationResult.valid ? validationResult.errors?.[0] : null;
+
   return (
-    <div style={{ display: 'flex', height: '100%', width: '100%', overflow: 'hidden', position: 'relative' }}>
+    <div className="explorer">
       {/* Column 2: File Tree */}
-      <div style={{ 
-        width: '300px', 
-        borderRight: '1px solid var(--border-color)', 
-        display: 'flex', 
-        flexDirection: 'column',
-        backgroundColor: 'var(--surface-color)',
-        flexShrink: 0
-      }}>
-        <div style={{ padding: '16px', borderBottom: '1px solid var(--border-color)', fontWeight: '600' }}>
-          Project Files
+      <aside className="explorer-sidebar" aria-label="Project files">
+        <div className="explorer-sidebar-header">
+          <div className="explorer-sidebar-title">
+            <h2 className="section-title"><Icon name="files" size={13} /> Explorer</h2>
+            {!loading && !error && <span className="badge">{files.length} files</span>}
+          </div>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto', overflowX: 'auto', padding: '12px' }}>
+        <div className="explorer-sidebar-body">
           {loading ? (
-            <p style={{ color: 'var(--text-muted)' }}>Loading files...</p>
+            <LoadingState>Loading files...</LoadingState>
           ) : error ? (
-            <p className="alert error">{error}</p>
+            <Banner type="error" boxed>{error}</Banner>
+          ) : files.length === 0 ? (
+            <div className="empty-inline" style={{ padding: '12px' }}>No Python files were indexed in this project.</div>
           ) : (
-            <TreeNode 
-              node={treeRoot} 
-              onSelect={handleSelectFile} 
-              selectedId={selectedFile?.id} 
+            <TreeNode
+              node={treeRoot}
+              onSelect={handleSelectFile}
+              selectedId={selectedFile?.id}
             />
           )}
         </div>
-      </div>
+      </aside>
 
       {/* Column 3: Editor & Controls */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: 'var(--bg-color)' }}>
+      <section className="explorer-main" aria-label="Editor">
         {!selectedFile ? (
-           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-             Select a file to view and edit code
-           </div>
+          <EmptyState icon="code" title="No file open">
+            Choose a Python file in the explorer to view and edit it. You can compare unsaved changes,
+            browse saved versions and see which files depend on it. Press <span className="kbd">Ctrl</span> <span className="kbd">S</span> to save.
+          </EmptyState>
         ) : (
-           <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-             {/* 1. Header Toolbar */}
-             <div style={{ 
-               padding: '12px 20px', 
-               borderBottom: '1px solid var(--border-color)', 
-               backgroundColor: 'var(--surface-color)',
-               display: 'flex',
-               justifyContent: 'space-between',
-               alignItems: 'center',
-               fontSize: '0.875rem',
-               flexShrink: 0,
-               gap: '16px',
-             }}>
-               {/* Left: File Metadata & Badges */}
-               <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-                 <div style={{ fontWeight: '600', color: 'var(--text-main)' }}>{selectedFile.relative_path}</div>
-                 <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                   Lines: {editorSource.split('\n').length}
-                 </div>
+          <>
+            {/* 1. Header Toolbar */}
+            <div className="editor-toolbar">
+              {/* Left: File Metadata & Status */}
+              <div className="editor-toolbar-left">
+                <div className="file-breadcrumb" title={selectedFile.relative_path}>
+                  <Icon name="file" size={14} style={{ color: 'var(--cs-cyan)', flexShrink: 0 }} />
+                  {pathParts.slice(0, -1).map((part, i) => (
+                    <React.Fragment key={i}>
+                      <span className="truncate">{part}</span>
+                      <Icon name="chevronRight" size={11} className="subtle" />
+                    </React.Fragment>
+                  ))}
+                  <span className="current truncate">{fileName}</span>
+                </div>
 
-                 {/* Dirty Status Badge */}
-                 {isDirty ? (
-                   <span style={{ 
-                     display: 'inline-flex', 
-                     alignItems: 'center', 
-                     gap: '6px',
-                     padding: '2px 8px', 
-                     borderRadius: '12px', 
-                     fontSize: '0.75rem',
-                     backgroundColor: 'rgba(245, 158, 11, 0.15)',
-                     color: '#f59e0b',
-                     fontWeight: '600'
-                   }}>
-                     ● Unsaved Changes
-                   </span>
-                 ) : (
-                   <span style={{ 
-                     display: 'inline-flex', 
-                     alignItems: 'center', 
-                     gap: '4px',
-                     padding: '2px 8px', 
-                     borderRadius: '12px', 
-                     fontSize: '0.75rem',
-                     backgroundColor: 'rgba(16, 185, 129, 0.15)',
-                     color: 'var(--success-text)',
-                   }}>
-                     ✓ Saved
-                   </span>
-                 )}
+                <span className="toolbar-divider" />
 
-                 {/* Syntax Validation Badge */}
-                 {isValidating ? (
-                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>⟳ Validating...</span>
-                 ) : validationResult ? (
-                   validationResult.valid ? (
-                     <span style={{ fontSize: '0.75rem', color: 'var(--success-text)' }}>✓ Syntax Valid</span>
-                   ) : (
-                     <span style={{ fontSize: '0.75rem', color: 'var(--error-text)', fontWeight: '600' }}>
-                       ⚠️ Syntax Error (Line {validationResult.errors?.[0]?.line || '?'})
-                     </span>
-                   )
-                 ) : null}
-               </div>
+                {/* Dirty Status */}
+                {isDirty ? (
+                  <span className="status-text warning"><span className="dot dot-warning" /> Unsaved</span>
+                ) : (
+                  <span className="status-text success"><Icon name="check" size={12} /> Saved</span>
+                )}
 
-               {/* Right: Action Buttons */}
-               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                 <button
-                   type="button"
-                   onClick={handleManualDiscard}
-                   disabled={!isDirty || isSaving}
-                   style={{
-                     padding: '6px 12px',
-                     borderRadius: '6px',
-                     border: '1px solid var(--border-color)',
-                     backgroundColor: 'transparent',
-                     color: isDirty ? 'var(--text-main)' : 'var(--text-muted)',
-                     cursor: isDirty && !isSaving ? 'pointer' : 'not-allowed',
-                     fontSize: '0.8rem',
-                   }}
-                 >
-                   Discard
-                 </button>
+                {/* Unsaved change stats vs. last saved source */}
+                {activeDiff && (
+                  <span
+                    className="diff-stats"
+                    title={`${activeDiff.stats.added} added, ${activeDiff.stats.removed} removed, ${activeDiff.stats.modified} modified lines since last save`}
+                  >
+                    <span className="add">+{activeDiff.stats.added}</span>
+                    <span className="remove">−{activeDiff.stats.removed}</span>
+                    <span className="modify">~{activeDiff.stats.modified}</span>
+                  </span>
+                )}
 
-                 <button
-                   type="button"
-                   onClick={handleSave}
-                   disabled={isSaving}
-                   className="btn-primary"
-                   style={{
-                     margin: 0,
-                     padding: '6px 16px',
-                     fontSize: '0.85rem',
-                     fontWeight: '600',
-                     cursor: isSaving ? 'wait' : 'pointer',
-                   }}
-                 >
-                   {isSaving ? 'Saving...' : 'Save (Ctrl+S)'}
-                 </button>
-               </div>
-             </div>
+                {/* Syntax Validation */}
+                {isValidating ? (
+                  <span className="status-text"><span className="spinner" style={{ width: '11px', height: '11px' }} /> Checking syntax</span>
+                ) : validationResult ? (
+                  validationResult.valid ? (
+                    <span className="status-text success" title="Python syntax is valid"><Icon name="checkCircle" size={12} /> Syntax OK</span>
+                  ) : (
+                    <span className="status-text danger"><Icon name="alertCircle" size={12} /> Syntax error · line {syntaxError?.line || '?'}</span>
+                  )
+                ) : null}
 
-             {/* 2. Feedback Banners */}
-             {saveBanner && (
-               <div 
-                 style={{ 
-                   padding: '10px 20px', 
-                   display: 'flex', 
-                   justifyContent: 'space-between',
-                   alignItems: 'center',
-                   fontSize: '0.85rem',
-                   backgroundColor: saveBanner.type === 'success' 
-                     ? 'var(--success-bg)' 
-                     : saveBanner.type === 'warning' 
-                     ? '#78350f' 
-                     : 'var(--error-bg)',
-                   color: saveBanner.type === 'success' 
-                     ? 'var(--success-text)' 
-                     : saveBanner.type === 'warning' 
-                     ? '#fde68a' 
-                     : 'var(--error-text)',
-                   borderBottom: `1px solid ${
-                     saveBanner.type === 'success' 
-                       ? 'var(--success-border)' 
-                       : saveBanner.type === 'warning' 
-                       ? '#b45309' 
-                       : 'var(--error-border)'
-                   }`,
-                   flexShrink: 0,
-                 }}
-               >
-                 <div>
-                   <strong>{saveBanner.type === 'success' ? 'Success:' : saveBanner.type === 'warning' ? 'Warning:' : 'Error:'}</strong>{' '}
-                   {saveBanner.message}
-                   {saveBanner.detail && <div style={{ fontSize: '0.78rem', marginTop: '2px', opacity: 0.9 }}>{saveBanner.detail}</div>}
-                 </div>
-                 <button 
-                   type="button" 
-                   onClick={() => setSaveBanner(null)}
-                   style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
-                 >
-                   ✕
-                 </button>
-               </div>
-             )}
+                <span className="status-text subtle">{editorSource.split('\n').length} lines</span>
+              </div>
 
-             {/* Syntax Validation Error Detail Banner */}
-             {validationResult && !validationResult.valid && validationResult.errors?.[0] && (
-               <div 
-                 style={{ 
-                   padding: '8px 20px', 
-                   backgroundColor: 'rgba(239, 68, 68, 0.1)', 
-                   borderBottom: '1px solid rgba(239, 68, 68, 0.25)', 
-                   color: '#fca5a5', 
-                   fontSize: '0.8rem',
-                   flexShrink: 0,
-                 }}
-               >
-                 <strong>Syntax Error:</strong> Line {validationResult.errors[0].line}: {validationResult.errors[0].message}
-                 {validationResult.errors[0].text && (
-                   <span style={{ marginLeft: '12px', fontFamily: 'monospace', opacity: 0.85 }}>
-                     "{validationResult.errors[0].text}"
-                   </span>
-                 )}
-               </div>
-             )}
+              {/* Right: View toggle and actions */}
+              <div className="editor-toolbar-right">
+                <div className="segmented" role="group" aria-label="Editor view">
+                  {VIEW_MODES.map(({ mode, label, icon, tooltip }) => {
+                    const isActive = effectiveView === mode;
+                    const isDisabled = mode === 'changes' && !isDirty;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        aria-pressed={isActive}
+                        disabled={isDisabled}
+                        onClick={() => setViewMode(mode)}
+                        title={isDisabled ? 'No unsaved changes to compare' : tooltip}
+                      >
+                        <Icon name={icon} size={13} />
+                        {label}
+                        {mode === 'changes' && activeDiff && <span className="seg-count">{activeDiff.hunks.length}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
 
-             {/* 3. Code Editor */}
-             <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-               {loadingDetails ? (
-                 <div style={{ padding: '24px', color: 'var(--text-muted)' }}>Loading source code...</div>
-               ) : (
-                 <CodeEditor
-                   value={editorSource}
-                   onChange={setEditorSource}
-                   onSave={handleSave}
-                   highlightRange={highlightRange}
-                 />
-               )}
-             </div>
-           </div>
-        )}
-      </div>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={handleManualDiscard}
+                  title="Revert all unsaved changes to the last saved version"
+                  disabled={!isDirty || isSaving}
+                >
+                  <Icon name="undo" size={13} /> Discard All…
+                </button>
 
-      {/* Discard Confirmation Modal */}
-      {showDiscardModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.65)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-        }}>
-          <div style={{
-            backgroundColor: 'var(--surface-color)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '8px',
-            padding: '24px',
-            maxWidth: '460px',
-            width: '90%',
-            boxShadow: '0 10px 25px rgba(0, 0, 0, 0.5)',
-          }}>
-            <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', color: 'var(--text-main)' }}>
-              Unsaved Changes
-            </h3>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '20px', lineHeight: 1.5 }}>
-              You have unsaved changes in <strong style={{ color: 'var(--text-main)' }}>{selectedFile?.relative_path}</strong>. 
-              Discard changes and open {pendingFileSwitch ? <strong style={{ color: 'var(--text-main)' }}>{pendingFileSwitch.relative_path}</strong> : 'another file'}?
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-              <button
-                type="button"
-                onClick={handleCancelDiscard}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border-color)',
-                  backgroundColor: 'transparent',
-                  color: 'var(--text-main)',
-                  cursor: 'pointer',
-                  fontSize: '0.85rem',
-                }}
-              >
-                Keep Editing
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDiscard}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '6px',
-                  border: 'none',
-                  backgroundColor: '#ef4444',
-                  color: '#fff',
-                  cursor: 'pointer',
-                  fontSize: '0.85rem',
-                  fontWeight: '600',
-                }}
-              >
-                Discard Changes
-              </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={isSaving || isRestoring}
+                  className="btn-primary btn-sm"
+                  title="Save and re-index (Ctrl+S)"
+                  style={{ cursor: isSaving ? 'wait' : undefined }}
+                >
+                  {isSaving ? <span className="spinner" style={{ width: '11px', height: '11px', borderTopColor: '#fff' }} /> : <Icon name="save" size={13} />}
+                  {isSaving ? 'Saving...' : 'Save'}
+                  {!isSaving && <span className="kbd">Ctrl S</span>}
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+
+            {/* 2. Feedback Banners */}
+            {saveBanner && (
+              <Banner
+                type={saveBanner.type}
+                title={saveBanner.type === 'success' ? 'Done.' : saveBanner.type === 'warning' ? 'Warning:' : 'Error:'}
+                detail={saveBanner.detail}
+                onDismiss={() => setSaveBanner(null)}
+              >
+                {saveBanner.message}
+              </Banner>
+            )}
+
+            {/* Syntax Validation Error Detail Banner */}
+            {syntaxError && (
+              <Banner
+                type="error"
+                title={`Syntax error on line ${syntaxError.line}:`}
+                detail={syntaxError.text ? <code>{syntaxError.text}</code> : undefined}
+              >
+                {syntaxError.message}
+              </Banner>
+            )}
+
+            {/* 3. Code Editor */}
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+              {loadingDetails ? (
+                <LoadingState>Loading source code...</LoadingState>
+              ) : (
+                <>
+                  {/* Kept mounted while hidden so scroll position and native undo survive view switches */}
+                  <div style={{ display: effectiveView === 'editor' ? 'flex' : 'none', height: '100%' }}>
+                    <CodeEditor
+                      value={editorSource}
+                      onChange={setEditorSource}
+                      onSave={handleSave}
+                      highlightRange={highlightRange}
+                      lineMarkers={markers}
+                    />
+                  </div>
+                  {effectiveView === 'changes' && (
+                    <DiffView
+                      hunks={activeDiff?.hunks}
+                      truncated={activeDiff?.truncated}
+                      currentSource={deferredSource}
+                      onRevertHunk={handleRevertHunk}
+                      onJumpToHunk={handleJumpToHunk}
+                    />
+                  )}
+                  {effectiveView === 'history' && (
+                    <HistoryView
+                      projectId={overview.id}
+                      relativePath={selectedFile.relative_path}
+                      savedSource={savedSource}
+                      isDirty={isDirty}
+                      isRestoring={isRestoring}
+                      refreshKey={historyRefreshKey}
+                      onRestore={handleRestoreVersion}
+                    />
+                  )}
+                  {effectiveView === 'impact' && (
+                    <FileImpactView
+                      key={`${selectedFile.relative_path}:${historyRefreshKey}`}
+                      projectId={overview.id}
+                      relativePath={selectedFile.relative_path}
+                      onOpenLocation={handleOpenLocation}
+                    />
+                  )}
+                </>
+              )}
+            </div>
+          </>
+        )}
+      </section>
+
+      {/* Discard Confirmation Modal (file switch, or Discard All) */}
+      <ConfirmDialog
+        open={showDiscardModal}
+        title={pendingFileSwitch ? 'Discard unsaved changes?' : 'Discard all changes?'}
+        tone="danger"
+        confirmLabel={pendingFileSwitch ? 'Discard & open file' : 'Discard all'}
+        cancelLabel="Keep editing"
+        onConfirm={handleConfirmDiscard}
+        onCancel={handleCancelDiscard}
+      >
+        {pendingFileSwitch ? (
+          <>
+            <strong>{selectedFile?.relative_path}</strong> has unsaved changes. Discard them and
+            open <strong>{pendingFileSwitch.relative_path}</strong>?
+          </>
+        ) : (
+          <>
+            Revert <strong>{selectedFile?.relative_path}</strong> to the last saved version?
+            {activeDiff && (
+              <>
+                {' '}This discards {activeDiff.stats.added} added, {activeDiff.stats.removed} removed
+                and {activeDiff.stats.modified} modified line{activeDiff.stats.modified === 1 ? '' : 's'}.
+              </>
+            )}
+            {' '}Nothing on disk is changed.
+          </>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

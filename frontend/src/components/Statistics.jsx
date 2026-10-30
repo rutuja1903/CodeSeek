@@ -1,44 +1,50 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { Panel, PageHeader, LoadingState, Banner } from './ui/ui';
 import '../index.css';
 
-// Reusable card for a group of statistics
-function StatCard({ title, children, style }) {
+// Reusable panel for a group of statistics
+function StatCard({ title, icon, children }) {
   return (
-    <div style={{
-      backgroundColor: 'var(--surface-color)',
-      border: '1px solid var(--border-color)',
-      borderRadius: '8px',
-      padding: '20px',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '12px',
-      ...style
-    }}>
-      <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600, color: 'var(--primary-color)' }}>{title}</h3>
+    <Panel title={title} icon={icon} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
       {children}
-    </div>
+    </Panel>
   );
 }
 
 // A single key-value row
 function StatRow({ label, value, valueStyle }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-      <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{label}</span>
-      <span style={{ fontWeight: 600, fontSize: '1rem', color: 'var(--text-main)', ...valueStyle }}>{value}</span>
+    <div className="kv-row">
+      <span style={{ textTransform: 'capitalize' }}>{label}</span>
+      <span style={valueStyle}>{value}</span>
     </div>
   );
 }
 
-// A simple horizontal bar for visual proportion
+// A thin horizontal meter for visual proportion
 function ProgressBar({ value, total, color }) {
   const percentage = total > 0 ? Math.round((value / total) * 100) : 0;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
-      <div style={{ flex: 1, backgroundColor: 'var(--bg-color)', height: '8px', borderRadius: '4px', overflow: 'hidden' }}>
-        <div style={{ width: `${percentage}%`, backgroundColor: color || 'var(--primary-color)', height: '100%' }} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%', margin: '2px 0 6px' }}>
+      <div className="meter" style={{ flex: 1 }} role="presentation">
+        <div style={{ width: `${percentage}%`, background: color || 'var(--cs-accent)' }} />
       </div>
-      <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', minWidth: '40px', textAlign: 'right' }}>{percentage}%</span>
+      <span className="mono subtle" style={{ fontSize: 'var(--cs-text-2xs)', minWidth: '34px', textAlign: 'right' }}>{percentage}%</span>
+    </div>
+  );
+}
+
+function SubHeading({ children, tone }) {
+  return <div className="section-title" style={{ marginTop: '12px', marginBottom: '6px', color: tone }}>{children}</div>;
+}
+
+function RankedRow({ rank, name, value, title }) {
+  return (
+    <div className="kv-row" style={{ padding: '3px 0' }}>
+      <span className="mono truncate" style={{ color: 'var(--cs-text)', fontSize: 'var(--cs-text-xs)' }} title={title || name}>
+        <span className="subtle" style={{ marginRight: '6px' }}>{rank}</span>{name}
+      </span>
+      <span className="muted" style={{ fontSize: 'var(--cs-text-xs)', flexShrink: 0 }}>{value}</span>
     </div>
   );
 }
@@ -122,165 +128,146 @@ export default function Statistics({ overview }) {
     };
   }, [filesData, symbolsData]);
 
+  const header = (
+    <PageHeader
+      title="Statistics"
+      description="Repository size, parsing health, symbol composition and graph metrics for this project."
+    />
+  );
+
   if (loading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-        Loading statistics...
-      </div>
+      <div className="page"><div className="page-inner page-inner-wide">{header}<LoadingState>Loading statistics...</LoadingState></div></div>
     );
   }
 
   if (error) {
     return (
-      <div style={{ padding: '24px' }}>
-        <p className="alert error">{error}</p>
-      </div>
+      <div className="page"><div className="page-inner page-inner-wide">{header}<Banner type="error" boxed title="Could not load statistics.">{error}</Banner></div></div>
     );
   }
 
   const { file_dependencies: fd, function_calls: fc } = statsData || {};
+  const parseOk = !derived.failedFiles?.length;
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', padding: '24px', backgroundColor: 'var(--bg-color)' }}>
-      <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '16px' }}>
-          <div>
-            <h2 style={{ margin: '0 0 8px 0', fontSize: '1.6rem', fontWeight: 700 }}>Repository Statistics</h2>
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Project: {overview.name}</div>
-          </div>
+    <div className="page">
+      <div className="page-inner page-inner-wide">
+        {header}
+
+        {/* Headline numbers */}
+        <div className="stat-strip">
+          {[
+            ['Files', overview.counts?.files],
+            ['Lines of code', derived.totalLines],
+            ['Symbols', derived.totalSymbols],
+            ['Imports', overview.counts?.imports],
+            ['Calls', overview.counts?.calls],
+          ].map(([label, value]) => (
+            <div className="stat" key={label}>
+              <span className="stat-label">{label}</span>
+              <span className="stat-value">{typeof value === 'number' ? value.toLocaleString() : (value ?? '—')}</span>
+            </div>
+          ))}
         </div>
 
-        {/* Dashboard-style Grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px' }}>
-          
-          {/* 1. Project Overview */}
-          <StatCard title="Project Overview">
-            <StatRow label="Total Files" value={overview.counts?.files} />
-            <StatRow label="Total Symbols" value={derived.totalSymbols} />
-            <StatRow label="Imports" value={overview.counts?.imports} />
-            <StatRow label="Function Calls" value={overview.counts?.calls} />
-            <StatRow label="Total Lines of Code" value={derived.totalLines?.toLocaleString()} valueStyle={{ color: 'var(--primary-color)' }} />
-          </StatCard>
+        <div className="grid-3">
+          {/* Parsing Health */}
+          <StatCard title="Parsing health" icon={parseOk ? 'checkCircle' : 'alert'}>
+            <StatRow label="Successfully parsed" value={`${derived.parsedSuccessfully ?? 0} / ${filesData.length}`} valueStyle={{ color: parseOk ? 'var(--cs-success)' : 'var(--cs-warning)' }} />
+            <ProgressBar value={derived.parsedSuccessfully} total={filesData.length} color={parseOk ? 'var(--cs-success)' : 'var(--cs-warning)'} />
 
-          {/* 3. Parsing Health */}
-          <StatCard title="Parsing Health">
-            <StatRow label="Successfully Parsed" value={`${derived.parsedSuccessfully} / ${filesData.length}`} />
-            <ProgressBar value={derived.parsedSuccessfully} total={filesData.length} color={derived.failedFiles?.length > 0 ? '#eab308' : '#22c55e'} />
-            
-            {derived.failedFiles?.length > 0 && (
-              <div style={{ marginTop: '8px' }}>
-                <span style={{ fontSize: '0.75rem', color: '#ef4444', textTransform: 'uppercase' }}>Failed Files ({derived.failedFiles.length})</span>
-                <div style={{ 
-                  maxHeight: '100px', 
-                  overflowY: 'auto', 
-                  backgroundColor: 'rgba(239, 68, 68, 0.1)', 
-                  padding: '8px', 
-                  borderRadius: '4px',
-                  marginTop: '4px',
-                  fontSize: '0.8rem',
-                  fontFamily: 'monospace',
-                  color: '#fca5a5'
+            {derived.failedFiles?.length > 0 ? (
+              <>
+                <SubHeading tone="var(--cs-danger)">Failed files ({derived.failedFiles.length})</SubHeading>
+                <div className="mono" style={{
+                  maxHeight: '110px',
+                  overflowY: 'auto',
+                  background: 'var(--cs-danger-soft)',
+                  border: '1px solid var(--cs-danger-border)',
+                  padding: '6px 8px',
+                  borderRadius: 'var(--cs-radius-sm)',
+                  fontSize: 'var(--cs-text-xs)',
+                  color: 'var(--cs-danger)'
                 }}>
                   {derived.failedFiles.map(fp => <div key={fp}>{fp}</div>)}
                 </div>
-              </div>
+              </>
+            ) : (
+              <div className="status-text success" style={{ marginTop: '4px' }}>Every file was parsed without syntax errors.</div>
             )}
           </StatCard>
 
-          {/* 4. Repository Size */}
-          <StatCard title="Repository Size">
-            <StatRow label="Total Lines" value={derived.totalLines?.toLocaleString()} />
-            <StatRow label="Average Lines / File" value={derived.avgLinesPerFile?.toLocaleString()} />
-            
-            <div style={{ marginTop: '12px' }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Largest Files</span>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-                {derived.largestFiles?.map((f, i) => (
-                  <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
-                    <span style={{ color: 'var(--text-main)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '200px' }}>
-                      {i + 1}. {f.relative_path}
-                    </span>
-                    <span style={{ color: 'var(--text-muted)' }}>{f.line_count} lines</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+          {/* Repository Size */}
+          <StatCard title="Repository size" icon="files">
+            <StatRow label="Total lines" value={derived.totalLines?.toLocaleString()} />
+            <StatRow label="Average lines / file" value={derived.avgLinesPerFile?.toLocaleString()} />
+
+            <SubHeading>Largest files</SubHeading>
+            {derived.largestFiles?.map((f, i) => (
+              <RankedRow key={f.id} rank={i + 1} name={f.relative_path} value={`${f.line_count} lines`} />
+            ))}
           </StatCard>
 
-          {/* 2. Symbol Breakdown */}
-          <StatCard title="Symbol Breakdown">
+          {/* Symbol Breakdown */}
+          <StatCard title="Symbol breakdown" icon="layers">
             {Object.entries(derived.symbolCounts || {})
               .sort(([, aCount], [, bCount]) => bCount - aCount)
               .map(([type, count]) => (
-                <div key={type} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div key={type}>
                   <StatRow label={type.replace('_', ' ')} value={count} />
                   <ProgressBar value={count} total={derived.totalSymbols} />
                 </div>
               ))
             }
+            {!derived.totalSymbols && <div className="empty-inline">No symbols were found.</div>}
           </StatCard>
 
-          {/* 5 & 6. File Dependency Metrics */}
-          <StatCard title="File Dependencies">
+          {/* File Dependency Metrics */}
+          <StatCard title="File dependencies" icon="graph">
             {fd ? (
               <>
-                <StatRow label="Nodes (Files)" value={fd.node_count} />
-                <StatRow label="Edges (Imports)" value={fd.edge_count} />
-                <StatRow label="Avg In-Degree" value={fd.avg_in_degree?.toFixed(2)} />
-                <StatRow label="Avg Out-Degree" value={fd.avg_out_degree?.toFixed(2)} />
-                
+                <StatRow label="Nodes (files)" value={fd.node_count} />
+                <StatRow label="Edges (imports)" value={fd.edge_count} />
+                <StatRow label="Avg in-degree" value={fd.avg_in_degree?.toFixed(2) ?? '—'} />
+                <StatRow label="Avg out-degree" value={fd.avg_out_degree?.toFixed(2) ?? '—'} />
+
                 {fd.top_in_degree?.length > 0 && (
-                  <div style={{ marginTop: '12px' }}>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Most Imported Files</span>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-                      {fd.top_in_degree.slice(0, 5).map((t, i) => (
-                        <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
-                          <span style={{ color: 'var(--text-main)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '200px' }}>
-                            {i + 1}. {t.id}
-                          </span>
-                          <span style={{ color: 'var(--primary-color)' }}>{t.count} times</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  <>
+                    <SubHeading>Most imported files</SubHeading>
+                    {fd.top_in_degree.slice(0, 5).map((t, i) => (
+                      <RankedRow key={t.id} rank={i + 1} name={t.id} value={`${t.count} importer${t.count === 1 ? '' : 's'}`} />
+                    ))}
+                  </>
                 )}
               </>
             ) : (
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No dependency data available.</p>
+              <div className="empty-inline">No dependency data available.</div>
             )}
           </StatCard>
 
-          {/* 5 & 6. Function Call Metrics */}
-          <StatCard title="Function Calls">
+          {/* Function Call Metrics */}
+          <StatCard title="Function calls" icon="callHierarchy">
             {fc ? (
               <>
-                <StatRow label="Nodes (Functions)" value={fc.node_count} />
-                <StatRow label="Edges (Calls)" value={fc.edge_count} />
-                <StatRow label="Avg In-Degree" value={fc.avg_in_degree?.toFixed(2)} />
-                <StatRow label="Avg Out-Degree" value={fc.avg_out_degree?.toFixed(2)} />
-                
+                <StatRow label="Nodes (functions)" value={fc.node_count} />
+                <StatRow label="Edges (calls)" value={fc.edge_count} />
+                <StatRow label="Avg in-degree" value={fc.avg_in_degree?.toFixed(2) ?? '—'} />
+                <StatRow label="Avg out-degree" value={fc.avg_out_degree?.toFixed(2) ?? '—'} />
+
                 {fc.top_in_degree?.length > 0 && (
-                  <div style={{ marginTop: '12px' }}>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Most Called Functions</span>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-                      {fc.top_in_degree.slice(0, 5).map((t, i) => (
-                        <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', gap: '12px' }}>
-                          <span style={{ color: 'var(--text-main)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '200px' }}>
-                            {i + 1}. {t.id.split('::').pop()}
-                          </span>
-                          <span style={{ color: 'var(--primary-color)' }}>{t.count} calls</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  <>
+                    <SubHeading>Most called functions</SubHeading>
+                    {fc.top_in_degree.slice(0, 5).map((t, i) => (
+                      <RankedRow key={t.id} rank={i + 1} name={t.id.split('::').pop()} title={t.id} value={`${t.count} caller${t.count === 1 ? '' : 's'}`} />
+                    ))}
+                  </>
                 )}
               </>
             ) : (
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No call data available.</p>
+              <div className="empty-inline">No call data available.</div>
             )}
           </StatCard>
-
         </div>
       </div>
     </div>
