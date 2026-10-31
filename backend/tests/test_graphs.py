@@ -111,18 +111,18 @@ def test_cycles():
         c.execute("INSERT INTO symbols (project_id, file_id, deterministic_id, name, symbol_type) VALUES (?, ?, ?, ?, ?)", (pid, fc, "c.py::C", "C", "function"))
         
         # function self-recursion: A -> A
-        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "a.py::A", "A"))
+        c.execute("INSERT INTO calls (project_id, file_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?, ?)", (pid, fa, "a.py::A", "A"))
         
         # two-function cycle: B -> A, A -> B
-        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "b.py::B", "A"))
-        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "a.py::A", "B"))
+        c.execute("INSERT INTO calls (project_id, file_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?, ?)", (pid, fb, "b.py::B", "A"))
+        c.execute("INSERT INTO calls (project_id, file_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?, ?)", (pid, fa, "a.py::A", "B"))
         
         # longer function cycle: A -> B -> C -> A
-        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "b.py::B", "C"))
-        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "c.py::C", "A"))
+        c.execute("INSERT INTO calls (project_id, file_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?, ?)", (pid, fb, "b.py::B", "C"))
+        c.execute("INSERT INTO calls (project_id, file_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?, ?)", (pid, fc, "c.py::C", "A"))
         
         # unresolved-call
-        c.execute("INSERT INTO calls (project_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?)", (pid, "c.py::C", "unknown_func"))
+        c.execute("INSERT INTO calls (project_id, file_id, caller_symbol_id, raw_callee_name) VALUES (?, ?, ?, ?)", (pid, fc, "c.py::C", "unknown_func"))
         
         conn.commit()
         conn.close()

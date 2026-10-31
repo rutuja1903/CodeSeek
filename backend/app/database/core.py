@@ -96,6 +96,21 @@ def init_db(db_path="codeseek.db"):
             FOREIGN KEY (file_id) REFERENCES files (id) ON DELETE CASCADE
         )
     ''')
-    
+
+    # Indexes on the foreign-key columns. Every query filters by project_id, and
+    # without file_id indexes each ON DELETE CASCADE scans the child tables once per
+    # deleted file row, making re-indexing quadratic as projects accumulate.
+    # IF NOT EXISTS keeps this idempotent, so existing databases gain them on startup.
+    for table, column in (
+        ("files", "project_id"),
+        ("symbols", "project_id"),
+        ("symbols", "file_id"),
+        ("imports", "project_id"),
+        ("imports", "file_id"),
+        ("calls", "project_id"),
+        ("calls", "file_id"),
+    ):
+        cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_{column} ON {table} ({column})")
+
     conn.commit()
     conn.close()

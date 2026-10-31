@@ -190,3 +190,21 @@ if __name__ == "__main__":
             failed += 1
 
     print(f"\n{passed} passed, {failed} failed")
+
+
+def test_init_db_creates_foreign_key_indexes_idempotently(tmp_path):
+    """Re-indexing deletes rows via ON DELETE CASCADE; without these indexes it is quadratic."""
+    from app.database.core import init_db
+    db_path = str(tmp_path / "idx.db")
+    init_db(db_path)
+    init_db(db_path)  # must be safe to run against an existing database
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute("SELECT tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%'").fetchall()
+    finally:
+        conn.close()
+    indexed = {(tbl, sql.split("(")[-1].strip(" )")) for tbl, sql in rows}
+    for table in ("files", "symbols", "imports", "calls"):
+        assert (table, "project_id") in indexed
+    for table in ("symbols", "imports", "calls"):
+        assert (table, "file_id") in indexed
