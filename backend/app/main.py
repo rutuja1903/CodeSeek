@@ -9,6 +9,7 @@ import os
 import json
 import uuid
 import zipfile
+import zlib
 import shutil
 import tempfile
 import ast
@@ -42,7 +43,7 @@ app = FastAPI(
 # CORS configuration for future React frontend (assuming local dev)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"], # React/Vite typical ports
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:5173"], # React/Vite typical ports
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,7 +72,8 @@ def analyze_project(req: AnalyzeRequest):
     try:
         project_id = index_project(req.name, req.directory_path)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
+        logger.error("Indexing failed for %r: %s", req.directory_path, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Indexing failed; the existing project data was left unchanged")
         
     return {"message": "Project indexed successfully", "project_id": project_id}
 
@@ -81,7 +83,66 @@ def analyze_project(req: AnalyzeRequest):
 # NOTE (MVP): Extracted directories are not automatically deleted after indexing.
 # They are retained so that the File Explorer can still read source content via /files/{id}.
 # Manual cleanup of backend/uploads/ is needed periodically.
-_UPLOADS_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads")
+# CODESEEK_UPLOADS_DIR lets tests (or deployments) point the upload store elsewhere.
+_UPLOADS_ROOT = os.environ.get("CODESEEK_UPLOADS_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads")
+
+# Upload resource limits (overridable through environment variables).
+# zipfile never yields more than an entry's declared size, so summing the declared
+# sizes bounds what extraction can write to disk (ZIP bomb protection).
+_MB = 1024 * 1024
+MAX_UPLOAD_BYTES = int(os.environ.get("CODESEEK_MAX_UPLOAD_MB", "100")) * _MB
+MAX_EXTRACTED_BYTES = int(os.environ.get("CODESEEK_MAX_EXTRACTED_MB", "500")) * _MB
+MAX_ZIP_ENTRIES = int(os.environ.get("CODESEEK_MAX_ZIP_ENTRIES", "20000"))
+MAX_ZIP_PATH_DEPTH = 64
+
+
+def _is_symlink_entry(member: zipfile.ZipInfo) -> bool:
+    return (member.external_attr >> 16) & 0o170000 == 0o120000
+
+
+def _check_zip_member_name(name: str):
+    """Reject absolute, drive-qualified, traversing or excessively nested entry names."""
+    normalized = name.replace("\\", "/")
+    parts = [p for p in normalized.split("/") if p]
+    if (
+        "\x00" in name
+        or normalized.startswith("/")
+        or (len(normalized) > 1 and normalized[1] == ":")
+        or any(p == ".." or ":" in p for p in parts)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Rejected: ZIP entry '{name}' would escape extraction directory (Zip Slip)"
+        )
+    if len(parts) > MAX_ZIP_PATH_DEPTH:
+        raise HTTPException(status_code=400, detail="Rejected: ZIP contains excessively nested directories")
+
+
+def _save_upload_to_temp(file: UploadFile) -> str:
+    """Stream the upload to a temporary file, enforcing MAX_UPLOAD_BYTES. Returns its path."""
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    total = 0
+    try:
+        with os.fdopen(tmp_fd, "wb") as f:
+            while True:
+                chunk = file.file.read(_MB)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Uploaded ZIP exceeds the {MAX_UPLOAD_BYTES // _MB} MB limit"
+                    )
+                f.write(chunk)
+    except HTTPException:
+        os.remove(tmp_path)
+        raise
+    except Exception:
+        os.remove(tmp_path)
+        raise HTTPException(status_code=400, detail="Could not read uploaded file")
+    return tmp_path
+
 
 def _extract_and_index_zip(project_name: str, file: UploadFile, update_project_id: Optional[int] = None) -> int:
     """
@@ -92,47 +153,63 @@ def _extract_and_index_zip(project_name: str, file: UploadFile, update_project_i
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only .zip files are accepted")
 
-    # --- 2. Read uploaded bytes and validate as a real ZIP ---
-    try:
-        zip_bytes = file.file.read()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Could not read uploaded file")
-
-    # Write bytes to a temporary file so zipfile can seek through it
-    try:
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
-        os.close(tmp_fd)
-        with open(tmp_path, "wb") as f:
-            f.write(zip_bytes)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to save uploaded ZIP")
+    # --- 2. Save upload (size-limited) and validate as a real ZIP ---
+    tmp_path = _save_upload_to_temp(file)
+    extract_root = None
 
     try:
         if not zipfile.is_zipfile(tmp_path):
             raise HTTPException(status_code=400, detail="Uploaded file is not a valid ZIP archive")
 
-        with zipfile.ZipFile(tmp_path, "r") as zf:
-            # --- 3. Zip Slip / path traversal check ---
-            extract_root = os.path.realpath(
-                os.path.join(_UPLOADS_ROOT, str(uuid.uuid4()))
-            )
-            os.makedirs(extract_root, exist_ok=True)
+        try:
+            with zipfile.ZipFile(tmp_path, "r") as zf:
+                members = zf.infolist()
 
-            for member in zf.infolist():
-                # Normalise the member path and check it stays inside extract_root
-                member_path = os.path.realpath(
-                    os.path.join(extract_root, member.filename)
-                )
-                if not member_path.startswith(extract_root + os.sep) and member_path != extract_root:
-                    # Clean up the already-created directory before raising
-                    shutil.rmtree(extract_root, ignore_errors=True)
+                # --- 3. Validate every entry before anything is written ---
+                if len(members) > MAX_ZIP_ENTRIES:
+                    raise HTTPException(status_code=400, detail=f"Rejected: ZIP contains more than {MAX_ZIP_ENTRIES} entries")
+                for member in members:
+                    _check_zip_member_name(member.filename)
+                if sum(m.file_size for m in members) > MAX_EXTRACTED_BYTES:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Rejected: ZIP entry '{member.filename}' would escape extraction directory (Zip Slip)"
+                        detail=f"Rejected: ZIP would extract to more than {MAX_EXTRACTED_BYTES // _MB} MB"
                     )
 
-            # --- 4. Extract ---
-            zf.extractall(extract_root)
+                extract_root = os.path.realpath(
+                    os.path.join(_UPLOADS_ROOT, str(uuid.uuid4()))
+                )
+                os.makedirs(extract_root, exist_ok=True)
+                norm_root = os.path.normcase(extract_root)
+
+                # --- 4. Extract entry by entry inside extract_root ---
+                for member in members:
+                    # Symlink entries are skipped: they could point outside the project
+                    if _is_symlink_entry(member):
+                        continue
+                    # Defence in depth: canonical containment check (Zip Slip)
+                    member_path = os.path.normcase(os.path.realpath(
+                        os.path.join(extract_root, member.filename)
+                    ))
+                    if member_path != norm_root and os.path.commonpath([norm_root, member_path]) != norm_root:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Rejected: ZIP entry '{member.filename}' would escape extraction directory (Zip Slip)"
+                        )
+                    zf.extract(member, extract_root)
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, RuntimeError, NotImplementedError, EOFError, ValueError) as e:
+            # Corrupt, encrypted or unsupported archives
+            logger.warning("ZIP extraction failed: %s", e)
+            raise HTTPException(status_code=400, detail="ZIP archive is corrupt, encrypted or uses an unsupported format")
+        except OSError as e:
+            # Disk full, permission denied, file locked (e.g. by antivirus), path too long.
+            # Raised as an HTTP error so the response keeps its CORS headers; an unhandled
+            # exception reaches the browser only as an unreadable "Failed to fetch".
+            logger.error("Could not write extracted ZIP files: %s", e, exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"The server could not write the extracted files ({e.strerror or type(e).__name__}). Check free disk space and file permissions, then try again."
+            )
 
         # --- 5. Detect single top-level folder ---
         top_level = [
@@ -149,11 +226,18 @@ def _extract_and_index_zip(project_name: str, file: UploadFile, update_project_i
             analyze_dir = extract_root
 
         # --- 6. Run existing indexing pipeline ---
+        # index_project runs in one transaction, so a failure leaves the previous index intact
         try:
             return index_project(project_name, analyze_dir, update_project_id=update_project_id)
         except Exception as e:
+            logger.error("Indexing failed for uploaded project %r: %s", project_name, e, exc_info=True)
+            raise HTTPException(status_code=500, detail="Indexing failed; the existing project data was left unchanged")
+
+    except BaseException:
+        # Never leave a partial extraction behind
+        if extract_root:
             shutil.rmtree(extract_root, ignore_errors=True)
-            raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
+        raise
 
     finally:
         # Always remove the temporary raw zip file

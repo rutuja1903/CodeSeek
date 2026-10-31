@@ -6,3 +6,18 @@ __pycache__/
 backend/uploads/
 backend/codeseek.db
 backend/version_history/
+# Local application data (never commit user projects or databases)
+*.db
+backend/uploads/
+backend/version_history/
+
+# Environments, tooling and build output
+.env
+.env.*
+backend/.venv/
+.venv/
+.pytest_cache/
+node/
+node.zip
+frontend/node_modules/
+frontend/dist/

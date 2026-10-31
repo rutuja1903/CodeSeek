@@ -17,16 +17,13 @@ client = TestClient(app)
 SAMPLE_SHOP = os.path.abspath(
     os.path.join(THIS_DIR, "..", "..", "sample_projects", "sample_shop")
 )
-TEST_DB_PATH = os.path.join(THIS_DIR, "..", "codeseek.db")
-
 def test_app_starts():
     response = client.get("/docs")
     assert response.status_code == 200
 
 def test_analyze_project():
-    if os.path.exists(TEST_DB_PATH):
-        os.remove(TEST_DB_PATH)
-        
+    # Runs against the temporary database set up in conftest.py; never delete
+    # backend/codeseek.db here, it holds the user's real projects.
     payload = {
         "name": "sample_shop",
         "directory_path": SAMPLE_SHOP

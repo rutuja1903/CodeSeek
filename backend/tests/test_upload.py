@@ -193,3 +193,164 @@ def test_update_upload_not_found():
         files={"file": ("dummy.zip", make_zip_from_dir(SAMPLE_SHOP), "application/zip")},
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Milestone 8: upload hardening regression tests
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch
+
+from app import main as app_main
+
+
+def _zip_of(entries) -> bytes:
+    """entries: list of (name, data) or (ZipInfo, data)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, data in entries:
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def _upload(zip_bytes, name="hardening_test"):
+    return client.post(
+        "/projects/analyze-upload",
+        data={"name": name},
+        files={"file": ("p.zip", zip_bytes, "application/zip")},
+    )
+
+
+def _upload_dirs():
+    root = app_main._UPLOADS_ROOT
+    return set(os.listdir(root)) if os.path.isdir(root) else set()
+
+
+def test_uploads_go_to_isolated_test_directory():
+    """Tests must never extract into the real backend/uploads directory."""
+    real_uploads = os.path.abspath(os.path.join(THIS_DIR, "..", "uploads"))
+    assert os.path.abspath(app_main._UPLOADS_ROOT) != real_uploads
+
+
+@pytest.mark.parametrize("bad_name", [
+    "/etc/evil.py",
+    r"\evil.py",
+    "C:/Windows/evil.py",
+    "C:evil.py",
+    r"pkg\..\..\evil.py",
+    "pkg/../../evil.py",
+])
+def test_upload_rejects_absolute_drive_and_traversal_entries(bad_name):
+    before = _upload_dirs()
+    response = _upload(_zip_of([("ok.py", "x = 1\n"), (bad_name, "y = 2\n")]))
+    assert response.status_code == 400, response.text
+    assert "escape" in response.json()["detail"].lower()
+    # Validation happens before extraction: nothing is left on disk
+    assert _upload_dirs() == before
+
+
+def test_upload_skips_symlink_entries():
+    link = zipfile.ZipInfo("link_to_outside.py")
+    link.external_attr = (0o120777 << 16)
+    response = _upload(_zip_of([("app.py", "def main():\n    pass\n"), (link, "../../../../etc/passwd")]))
+    assert response.status_code == 200, response.text
+    pid = response.json()["project_id"]
+    files = client.get(f"/projects/{pid}/files").json()
+    assert [f["relative_path"] for f in files] == ["app.py"]
+
+
+def test_upload_rejects_excessive_extracted_size():
+    before = _upload_dirs()
+    # ~2 MB of zeros compresses to a few KB: a miniature ZIP bomb
+    bomb = _zip_of([("bomb.py", b"0" * (2 * 1024 * 1024))])
+    with patch.object(app_main, "MAX_EXTRACTED_BYTES", 1024 * 1024):
+        response = _upload(bomb)
+    assert response.status_code == 400
+    assert "extract" in response.json()["detail"].lower()
+    assert _upload_dirs() == before
+
+
+def test_upload_rejects_too_many_entries():
+    with patch.object(app_main, "MAX_ZIP_ENTRIES", 5):
+        response = _upload(_zip_of([(f"m{i}.py", "") for i in range(6)]))
+    assert response.status_code == 400
+    assert "entries" in response.json()["detail"]
+
+
+def test_upload_rejects_excessive_nesting():
+    deep = "/".join(["d"] * (app_main.MAX_ZIP_PATH_DEPTH + 1)) + "/x.py"
+    response = _upload(_zip_of([(deep, "")]))
+    assert response.status_code == 400
+    assert "nested" in response.json()["detail"]
+
+
+def test_upload_rejects_oversized_upload():
+    with patch.object(app_main, "MAX_UPLOAD_BYTES", 1024):
+        response = _upload(_zip_of([("big.py", os.urandom(4096).hex())]))
+    assert response.status_code == 413
+
+
+def test_upload_corrupt_member_returns_400_and_cleans_up():
+    data = bytearray(_zip_of([("app.py", "def main():\n    return 1\n" * 50)]))
+    # Corrupt the compressed payload of the first entry (after its 30-byte local header + name)
+    offset = 30 + len("app.py") + 5
+    data[offset:offset + 8] = b"\xff" * 8
+    before = _upload_dirs()
+    response = _upload(bytes(data))
+    assert response.status_code == 400, response.text
+    assert _upload_dirs() == before
+
+
+def test_failed_indexing_cleans_up_and_hides_internal_details():
+    before = _upload_dirs()
+    with patch("app.main.index_project", side_effect=RuntimeError(r"boom at C:\secret\path")):
+        response = _upload(_zip_of([("app.py", "x = 1\n")]))
+    assert response.status_code == 500
+    assert "secret" not in response.json()["detail"]
+    assert _upload_dirs() == before
+
+
+def test_failed_update_upload_keeps_existing_project_index():
+    res = _upload(make_zip_from_dir(SAMPLE_SHOP), name="update_failure_test")
+    assert res.status_code == 200
+    pid = res.json()["project_id"]
+    overview_before = client.get(f"/projects/{pid}").json()
+
+    # A ZIP whose indexing fails part-way must not wipe the existing index
+    with patch("app.services.indexer.parse_repository", side_effect=RuntimeError("parser crashed")):
+        res_b = client.post(
+            f"/projects/{pid}/update-upload",
+            files={"file": ("v2.zip", _zip_of([("only.py", "x = 1\n")]), "application/zip")},
+        )
+    assert res_b.status_code == 500
+    overview_after = client.get(f"/projects/{pid}").json()
+    assert overview_after["counts"] == overview_before["counts"]
+    assert overview_after["root_path"] == overview_before["root_path"]
+
+
+def test_extraction_os_error_returns_json_error_with_cors_headers():
+    """Filesystem errors must surface as a readable error, not a bare 500 the browser
+    reports as "Failed to fetch" (unhandled 500s carry no CORS headers)."""
+    before = _upload_dirs()
+    with patch("zipfile.ZipFile.extract", side_effect=PermissionError(13, "Permission denied")):
+        response = client.post(
+            "/projects/analyze-upload",
+            headers={"Origin": "http://localhost:5173"},
+            data={"name": "os_error_test"},
+            files={"file": ("p.zip", _zip_of([("app.py", "x = 1\n")]), "application/zip")},
+        )
+    assert response.status_code == 500
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
+    assert "Permission denied" in response.json()["detail"]
+    assert _upload_dirs() == before
+
+
+def test_upload_errors_include_cors_headers():
+    response = client.post(
+        "/projects/analyze-upload",
+        headers={"Origin": "http://localhost:5173"},
+        data={"name": "bad"},
+        files={"file": ("bad.zip", b"not a zip", "application/zip")},
+    )
+    assert response.status_code == 400
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
