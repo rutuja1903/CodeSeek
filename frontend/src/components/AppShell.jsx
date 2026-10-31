@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import Icon, { BrandMark } from './ui/Icon';
 import { ConfirmDialog } from './ui/ui';
-import { formatRelativeTime, pluralize } from '../utils/format';
+import { formatRelativeTime, pluralize, describeRequestError, errorDetail } from '../utils/format';
 import '../index.css';
 
 // Navigation structure; ids match App.jsx tabs
@@ -74,7 +74,7 @@ function AppShell({ overview, activeTab, onNavigate, onUpdateOverview, isEditorD
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.detail || "Update failed");
+        throw new Error(errorDetail(errData, `Update failed (HTTP ${response.status})`));
       }
 
       const data = await response.json();
@@ -87,7 +87,7 @@ function AppShell({ overview, activeTab, onNavigate, onUpdateOverview, isEditorD
       // Clear file input
       e.target.value = '';
     } catch (err) {
-      setError(err.message);
+      setError(describeRequestError(err, 'Update failed.'));
     } finally {
       setUpdating(false);
     }

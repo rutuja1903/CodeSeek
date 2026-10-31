@@ -38,3 +38,26 @@ export function formatNumber(value) {
 export function pluralize(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
+
+/**
+ * Error text for a failed backend request. fetch() rejects with a TypeError
+ * ("Failed to fetch") when the backend cannot be reached or a response is unreadable
+ * (e.g. a server crash without CORS headers); explain that instead of showing it raw.
+ */
+export function describeRequestError(err, fallback = 'Request failed.') {
+  if (err instanceof TypeError) {
+    return 'Could not reach the CodeSeek backend at http://127.0.0.1:8000. Make sure it is running, then try again. If it is running, check its terminal for errors.';
+  }
+  return err?.message || fallback;
+}
+
+/**
+ * Message from a FastAPI error body: `detail` is a string for HTTP errors and a list
+ * of {msg} objects for request validation errors (422).
+ */
+export function errorDetail(body, fallback) {
+  const detail = body?.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (Array.isArray(detail) && detail.length) return detail.map((d) => d?.msg || String(d)).join('; ');
+  return fallback;
+}

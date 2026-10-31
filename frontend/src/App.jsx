@@ -9,6 +9,7 @@ import Statistics from './components/Statistics';
 import AppShell from './components/AppShell';
 import Icon, { BrandMark } from './components/ui/Icon';
 import { ConfirmDialog } from './components/ui/ui';
+import { describeRequestError, errorDetail } from './utils/format';
 import './index.css';
 
 const PAGE_LABELS = {
@@ -116,7 +117,7 @@ function App() {
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.detail || `Upload failed (HTTP ${response.status})`);
+        throw new Error(errorDetail(errData, `Upload failed (HTTP ${response.status})`));
       }
 
       const data = await response.json();
@@ -129,7 +130,7 @@ function App() {
       setActiveTab('dashboard');
 
     } catch (err) {
-      setError(err.message || 'Could not connect to the backend.');
+      setError(describeRequestError(err, 'Could not connect to the backend.'));
     } finally {
       setLoading(false);
     }
